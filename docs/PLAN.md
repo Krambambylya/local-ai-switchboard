@@ -2,6 +2,8 @@
 
 Phase 0 plan. No application code is written until Phase 1 is explicitly started. Each later phase ends with tests, a file list, and a written "what works / what remains" note, then stops.
 
+The gateway no longer authenticates callers. Later sections that describe a bearer token, `secrets\token.txt`, or a token in the Mac client file are the earlier design. The network boundary is the Windows firewall rule: Private profile, `LocalSubnet`, TCP 8787.
+
 Development is on this Mac. The runtime is the Windows 11 PC with the RTX 4060 8 GB. Mocked pytest runs here. Real GPU behavior is a Windows checklist and is never reported as passed unless it was actually run on that PC.
 
 ## Architecture overview

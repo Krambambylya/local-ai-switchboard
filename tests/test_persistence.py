@@ -24,7 +24,6 @@ from local_ai_switchboard.storage.jobs import (
     delete_job_files,
 )
 
-TOKEN = "test-token-value-0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\nfake-image"
 
 
@@ -35,10 +34,6 @@ def _helpers():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _auth() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TOKEN}"}
 
 
 def _record(
@@ -83,7 +78,6 @@ def test_restart_marks_unfinished_jobs_interrupted_and_keeps_files(tmp_path: Pat
 
 def test_path_traversal_is_rejected_and_unicode_names_stay_inside_the_root(
     tmp_path: Path,
-    token_file: Path,
     unavailable_gpu: GpuSnapshot,
 ) -> None:
     storage = tmp_path / "AI Projects" / "данные"
@@ -109,7 +103,6 @@ def test_path_traversal_is_rejected_and_unicode_names_stay_inside_the_root(
         install_root=tmp_path,
         storage_dir=storage,
         log_dir=tmp_path / "logs",
-        token_file=token_file,
         output_retention_days=0,
     )
     app = create_app(
@@ -121,12 +114,12 @@ def test_path_traversal_is_rejected_and_unicode_names_stay_inside_the_root(
         },
     )
     with TestClient(app) as client:
-        denied = client.get("/v1/jobs/escape/download", headers=_auth())
+        denied = client.get("/v1/jobs/escape/download")
         assert denied.status_code == 404
-        saved = client.get("/v1/jobs/job-1/download", headers=_auth())
+        saved = client.get("/v1/jobs/job-1/download")
         assert saved.status_code == 200
         assert saved.content == PNG
-        listed = client.get("/v1/jobs/job-1", headers=_auth())
+        listed = client.get("/v1/jobs/job-1")
         assert listed.status_code == 200
         assert listed.json()["outputs"] == [{"filename": filename, "media_type": "image/png"}]
         assert str(storage) not in listed.text
@@ -173,7 +166,6 @@ def test_running_image_is_interrupted_on_restart_and_is_not_resubmitted(
     with TestClient(app) as client:
         created = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={"workflow_id": "fixture-image", "prompt": helpers.PROMPT},
         )
         assert created.status_code == 202
@@ -202,7 +194,7 @@ def test_running_image_is_interrupted_on_restart_and_is_not_resubmitted(
     )
     with TestClient(app) as client:
         assert app.state.scheduler._state is SchedulerState.IDLE
-        response = client.get(f"/v1/jobs/{job_id}", headers=_auth())
+        response = client.get(f"/v1/jobs/{job_id}")
         assert response.status_code == 200
         assert response.json()["status"] == JobStatus.INTERRUPTED.value
         assert response.json()["error"] == INTERRUPTED_REASON
@@ -211,7 +203,6 @@ def test_running_image_is_interrupted_on_restart_and_is_not_resubmitted(
     flush_logs()
     log_text = (settings.resolved_log_dir() / "switchboard.log").read_text(encoding="utf-8")
     assert helpers.PROMPT not in log_text
-    assert TOKEN not in log_text
 
 
 def test_completed_image_is_downloaded_after_restart(
@@ -235,7 +226,6 @@ def test_completed_image_is_downloaded_after_restart(
     with TestClient(app) as client:
         created = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={"workflow_id": "fixture-image", "prompt": helpers.PROMPT, "width": 768, "height": 768},
         )
         assert created.status_code == 202
@@ -243,7 +233,7 @@ def test_completed_image_is_downloaded_after_restart(
         deadline = time.monotonic() + 3
         body: dict[str, object] = {}
         while time.monotonic() < deadline:
-            response = client.get(f"/v1/jobs/{job_id}", headers=_auth())
+            response = client.get(f"/v1/jobs/{job_id}")
             body = response.json()
             if body["status"] in {"succeeded", "failed", "cancelled", "interrupted"}:
                 break
@@ -266,7 +256,7 @@ def test_completed_image_is_downloaded_after_restart(
         },
     )
     with TestClient(app) as client:
-        downloaded = client.get(f"/v1/jobs/{job_id}/download", headers=_auth())
+        downloaded = client.get(f"/v1/jobs/{job_id}/download")
         assert downloaded.status_code == 200
         assert downloaded.content == helpers.PNG
         assert fresh.prompts == []

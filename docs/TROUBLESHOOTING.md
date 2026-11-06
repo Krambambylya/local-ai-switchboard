@@ -6,8 +6,7 @@ These are the failures the current code reports. They are not a record of a live
 
 | What you see | What it means |
 | --- | --- |
-| `GET /health/ready` returns `degraded` | The token file is missing, empty, unreadable, or shorter than 16 characters, or another preflight check failed. The body does not say which one. Run `local-ai-switchboard preflight` on the PC. |
-| HTTP 401 | The `Authorization: Bearer` value does not match `secrets\token.txt`. |
+| `GET /health/ready` returns `degraded` | A preflight check failed. The body does not say which one. Run `local-ai-switchboard preflight` on the PC. The gateway does not require a token. |
 | HTTP 400 `Unsupported fields:` | The chat body includes a field outside the allowlist. Remove that field. The gateway will not ignore it. |
 | HTTP 400 about a remote image URL | Send a base64 data URL, or send text only. |
 | HTTP 404 on a workflow id | That id is not in the workflow directory. |
@@ -46,18 +45,17 @@ ComfyUI starts only when an image job needs it, the portable directory contains 
 macOS Terminal:
 
 ```bash
-ls -l ~/.config/local-ai-switchboard/client.json
 python3 client/macos/generate_asset.py --help
 ```
 
-The config file must be mode `0600` and owned by you. The script exits 1 for a bad config or a network failure after retries, and exits 2 when the job finishes as failed, cancelled, or interrupted. It does not print the token.
+`~/.config/local-ai-switchboard/config.json` needs `gateway_url` only. The script exits 1 for a bad config or a network failure after retries, and exits 2 when the job finishes as failed, cancelled, or interrupted.
 
 A 409 from the disabled Klein workflow is expected today. Retries are not used for 400, 401, 404, or 409.
 
 ## Installer
 
-The installer log is `logs\installer-*.log` under the install root. It records paths and versions. It does not record the token.
+The installer log is `logs\installer-*.log` under the install root. It records paths and versions.
 
-A checksum mismatch deletes the partial download and does not run the installer. An existing ComfyUI tree, token, or `.env` is kept. `update.ps1` refuses a source version older than the installed package unless `-AllowDowngrade` is set.
+A checksum mismatch deletes the partial download and does not run the installer. An existing ComfyUI tree or `.env` is kept. `update.ps1` refuses a source version older than the installed package unless `-AllowDowngrade` is set.
 
 If Windows `tar` cannot unpack the ComfyUI `.7z` and `7z.exe` is not already installed, the installer downloads the pinned `7zr.exe` from the official 7-Zip GitHub release, checks its SHA-256, and extracts the archive with that program. An interrupted model download leaves a `.partial` file. Run the installer again and it resumes with an HTTP range request. The file is installed only after the pinned size and checksum match.

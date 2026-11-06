@@ -13,7 +13,7 @@ The Windows hardware checklist in [docs/TESTING.md](docs/TESTING.md) has not bee
 ## Layout
 
 - `src/local_ai_switchboard/` is the gateway.
-- `client/macos/generate_asset.py` downloads a finished image into a project directory.
+- `client/macos/generate_asset.py` downloads a finished image into a project directory. It sends the Gateway URL and no credentials.
 - `installer/` is the Windows PowerShell installer and the lifecycle scripts.
 - `docs/` is the operator and security documentation.
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from local_ai_switchboard.api.auth import authorized, unauthorized
 from local_ai_switchboard.providers.base import ProviderKind
 from local_ai_switchboard.providers.comfyui import ComfyUIProvider, ImageExchange
 from local_ai_switchboard.providers.ollama import error_payload
@@ -27,8 +26,6 @@ _REAL_WORKFLOW = (
 async def list_workflows(request: Request) -> JSONResponse:
     """List registered workflows. Graphs are not included."""
 
-    if not authorized(request):
-        return unauthorized()
     provider = _comfy(request)
     if provider is None:
         return _unavailable("ComfyUI is not connected")
@@ -49,8 +46,6 @@ async def list_workflows(request: Request) -> JSONResponse:
 async def create_asset(request: Request) -> JSONResponse:
     """Queue one registered image workflow and return its job id."""
 
-    if not authorized(request):
-        return unauthorized()
     provider = _comfy(request)
     if provider is None:
         return _unavailable("ComfyUI is not connected")
@@ -91,8 +86,6 @@ async def create_asset(request: Request) -> JSONResponse:
 async def get_job(request: Request, job_id: str) -> JSONResponse:
     """Return the status of one scheduler job."""
 
-    if not authorized(request):
-        return unauthorized()
     scheduler: GpuScheduler = request.app.state.scheduler
     job = await scheduler.get_job(job_id)
     if job is not None:
@@ -107,8 +100,6 @@ async def get_job(request: Request, job_id: str) -> JSONResponse:
 async def cancel_job(request: Request, job_id: str) -> JSONResponse:
     """Cancel a queued image job, or interrupt the prompt that is running."""
 
-    if not authorized(request):
-        return unauthorized()
     scheduler: GpuScheduler = request.app.state.scheduler
     job = await scheduler.get_job(job_id)
     record = None if job is not None else _stored_job(request, job_id)
@@ -125,8 +116,6 @@ async def cancel_job(request: Request, job_id: str) -> JSONResponse:
 async def download_job(request: Request, job_id: str) -> Response:
     """Send the image copied into gateway storage."""
 
-    if not authorized(request):
-        return unauthorized()
     provider = _comfy(request)
     scheduler: GpuScheduler = request.app.state.scheduler
     root = _output_root(request, provider)

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-TOKEN = "test-token-value-0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\nfake-image"
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT_PATH = ROOT / "client" / "macos" / "generate_asset.py"
@@ -57,15 +56,9 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(length) if length else b""
         gateway.authorizations.append(self.headers.get("Authorization", ""))
-        if self.headers.get("Authorization") != f"Bearer {gateway.token}":
-            self._send(401, {"error": {"message": "authentication failed", "type": "auth"}})
-            return
         if gateway.unavailable:
             gateway.unavailable -= 1
             self._send(503, {"error": {"message": "busy", "type": "provider_error"}})
-            return
-        if gateway.leak_token:
-            self._send(400, {"error": {"message": f"bad {gateway.token}", "type": "invalid_request_error"}})
             return
         if self.command == "POST" and self.path == "/v1/assets":
             body = json.loads(raw.decode("utf-8"))
@@ -103,12 +96,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Gateway(ThreadingHTTPServer):
-    def __init__(self, token: str) -> None:
+    def __init__(self) -> None:
         super().__init__(("127.0.0.1", 0), Handler)
-        self.token = token
         self.drop_remaining = 0
         self.unavailable = 0
-        self.leak_token = False
         self.bodies: list[dict[str, object]] = []
         self.authorizations: list[str] = []
         self.polls = 0
@@ -124,16 +115,15 @@ def asset_client():
     return _load_client()
 
 
-def _config(path: Path, url: str, token: str = TOKEN) -> None:
+def _config(path: Path, url: str) -> None:
     path.write_text(
-        json.dumps({"gateway_url": url, "token": token}, ensure_ascii=False),
+        json.dumps({"gateway_url": url}, ensure_ascii=False),
         encoding="utf-8",
     )
-    path.chmod(0o600)
 
 
 def _serve() -> tuple[Gateway, threading.Thread]:
-    server = Gateway(TOKEN)
+    server = Gateway()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
@@ -154,14 +144,15 @@ def test_client_uses_the_standard_library_only() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             modules.add(node.module.split(".")[0])
     assert modules <= set(sys.stdlib_module_names) | {"__future__"}
-    example = (ROOT / "client" / "macos" / "client.json.example").read_text(encoding="utf-8")
+    example = (ROOT / "client" / "macos" / "config.json.example").read_text(encoding="utf-8")
     docs = (ROOT / "docs" / "MAC_CLIENT_SETUP.md").read_text(encoding="utf-8")
-    assert "gateway_url" in example
-    assert "chmod 600" in docs
+    assert json.loads(example) == {"gateway_url": "http://192.168.1.50:8787"}
     assert "macOS Terminal" in docs
+    assert "keychain" not in docs.lower()
+    assert "bearer" not in docs.lower()
 
 
-def test_client_saves_a_unicode_path_and_does_not_print_the_token(
+def test_client_saves_a_unicode_path_without_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -202,9 +193,9 @@ def test_client_saves_a_unicode_path_and_does_not_print_the_token(
         "seed": 7,
     }
     assert server.authorizations
-    assert all(item == f"Bearer {TOKEN}" for item in server.authorizations)
-    assert TOKEN not in captured.out
-    assert TOKEN not in captured.err
+    assert all(item == "" for item in server.authorizations)
+    assert "Authorization" not in captured.out
+    assert "Authorization" not in captured.err
     assert "submitted job-1" in captured.out
     assert str(destination) in captured.out
 
@@ -231,11 +222,11 @@ def test_client_retries_dropped_connections_and_unavailable_responses(
     captured = capsys.readouterr()
     assert code == 0
     assert destination.read_bytes() == PNG
-    assert TOKEN not in captured.out
-    assert TOKEN not in captured.err
+    assert server.authorizations
+    assert all(item == "" for item in server.authorizations)
 
 
-def test_client_timeout_and_leaked_token_are_not_printed(
+def test_client_timeout_does_not_send_authorization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -258,40 +249,26 @@ def test_client_timeout_and_leaked_token_are_not_printed(
     captured = capsys.readouterr()
     assert timed_out == 1
     assert "unreachable" in captured.err
-    assert TOKEN not in captured.out
-    assert TOKEN not in captured.err
-
-    server, _thread = _serve()
-    server.leak_token = True
-    _config(config, server.url)
-    try:
-        leaked = asset_client.main(
-            ["--prompt", "secret", "--output", str(tmp_path / "nope.png"), "--workflow", "fixture-image"]
-        )
-    finally:
-        _stop(server)
-    captured = capsys.readouterr()
-    assert leaked == 1
-    assert TOKEN not in captured.out
-    assert TOKEN not in captured.err
-    assert "[REDACTED]" in captured.err
 
 
-def test_world_readable_config_is_refused_without_printing_the_token(
+def test_config_with_a_token_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     asset_client,
 ) -> None:
-    config = tmp_path / "client.json"
-    _config(config, "http://127.0.0.1:9")
-    config.chmod(0o644)
+    config = tmp_path / "config.json"
+    secret = "test-token-value-0123456789abcdef"
+    config.write_text(
+        json.dumps({"gateway_url": "http://127.0.0.1:9", "token": secret}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("LAS_CLIENT_CONFIG", str(config))
     code = asset_client.main(
         ["--prompt", "hidden", "--output", str(tmp_path / "hidden.png"), "--workflow", "fixture-image"]
     )
     captured = capsys.readouterr()
     assert code == 1
-    assert "readable only by the current user" in captured.err
-    assert TOKEN not in captured.out
-    assert TOKEN not in captured.err
+    assert "must not contain credentials" in captured.err
+    assert secret not in captured.out
+    assert secret not in captured.err

@@ -9,7 +9,8 @@
     gateway workflow manifest. It is validated with load_manifest and is not a
     raw ComfyUI API export. Downloaded installers are checked against pins.json
     and started from an argument list. This script does not execute a downloaded
-    script. A rerun keeps an existing token, .env, portable tree, and models.
+    script. A rerun keeps an existing .env, portable tree, and models.
+    The gateway does not use a password or API token.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -24,7 +25,6 @@ param(
     [switch]$SkipFirewall,
     [switch]$AcceptUnchecksummedModels,
     [switch]$ForceConfig,
-    [switch]$ReplaceToken,
     [switch]$UpgradeOllama,
     [switch]$AllowOlderWindows,
     [switch]$AllowLowMemory,
@@ -695,7 +695,7 @@ function Install-GatewaySoftware {
     $projectVersion = Read-ProjectVersion -SourceRoot $SourceRoot
     if ($DryRun) {
         Write-InstallLog "Would create the gateway virtual environment and install project version $projectVersion."
-        Write-InstallLog 'Would write a protected token file and .env when those files are absent.'
+        Write-InstallLog 'Would write .env when that file is absent.'
         return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' }
     }
     foreach ($directory in @(
@@ -708,9 +708,6 @@ function Install-GatewaySoftware {
         )) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
-    $secrets = Join-Path $InstallRoot 'secrets'
-    New-Item -ItemType Directory -Force -Path $secrets | Out-Null
-    Protect-UserOnlyPath -LiteralPath $secrets
     if (-not (Test-Path -LiteralPath $venvPython)) {
         if (Test-Path -LiteralPath (Join-Path $InstallRoot 'venv')) {
             return New-StageResult -Verified $false -Detail 'The venv directory exists without Scripts\python.exe. It was left unchanged.' -Facts @{}
@@ -743,27 +740,6 @@ function Install-GatewaySoftware {
     if ($LASTEXITCODE -ne 0 -or $versions.Count -lt 5) {
         return New-StageResult -Verified $false -Detail 'The gateway dependencies could not be imported after installation.' -Facts @{}
     }
-    $tokenPath = Join-Path $secrets 'token.txt'
-    $clientPath = Join-Path $secrets 'mac-client.json'
-    if ((Test-Path -LiteralPath $tokenPath) -and -not $ReplaceToken) {
-        $status = Get-TokenProtectionStatus -LiteralPath $tokenPath
-        if ($status.Length -lt 16) {
-            return New-StageResult -Verified $false -Detail 'The existing token file is too short and was left unchanged.' -Facts @{}
-        }
-        if (-not $status.AclOk) {
-            Protect-UserOnlyPath -LiteralPath $tokenPath
-        }
-        Write-InstallLog "Kept the existing token file at $tokenPath."
-    } else {
-        $token = New-GatewayToken
-        Write-Utf8File -Path $tokenPath -Text ($token + "`r`n")
-        Protect-UserOnlyPath -LiteralPath $tokenPath
-        $status = Get-TokenProtectionStatus -LiteralPath $tokenPath
-        if (-not $status.AclOk -or $status.Length -lt 32) {
-            return New-StageResult -Verified $false -Detail 'The token file was written but its protection check failed.' -Facts @{}
-        }
-        Write-InstallLog "Wrote a new token file at $tokenPath."
-    }
     $portableRoot = ''
     if ($Profile -eq 'Design') {
         $portableRoot = [string](Find-ComfyPortableRoot -Path (Join-Path $InstallRoot 'ComfyUI_windows_portable'))
@@ -780,7 +756,6 @@ function Install-GatewaySoftware {
             "LAS_INSTALL_ROOT=$InstallRoot",
             "LAS_STORAGE_DIR=$(Join-Path $InstallRoot 'data')",
             "LAS_LOG_DIR=$(Join-Path $InstallRoot 'logs')",
-            "LAS_TOKEN_FILE=$tokenPath",
             'LAS_OLLAMA_URL=http://127.0.0.1:11434',
             'LAS_COMFYUI_URL=http://127.0.0.1:8188',
             "LAS_API_HOST=0.0.0.0",
@@ -829,32 +804,12 @@ function Install-GatewaySoftware {
     foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $service $name) -Force
     }
-    $addresses = @(Get-LanIPv4Addresses)
-    $chosen = '127.0.0.1'
-    if ($addresses.Count -gt 0) {
-        $chosen = [string]$addresses[0]
-    }
-    if (-not (Test-Path -LiteralPath $clientPath) -or $ReplaceToken) {
-        $tokenText = [System.IO.File]::ReadAllText($tokenPath).Trim()
-        $script:RedactValue = $tokenText
-        $clientJson = (@{
-                gateway_url = "http://${chosen}:$ApiPort"
-                token       = $tokenText
-            } | ConvertTo-Json)
-        Write-Utf8File -Path $clientPath -Text $clientJson
-        Protect-UserOnlyPath -LiteralPath $clientPath
-        $tokenText = $null
-        Write-InstallLog "Wrote the protected Mac client file at $clientPath."
-    }
-    return New-StageResult -Verified $true -Detail 'The gateway environment imports, the token file is protected, and switchboard.db is SQLite.' -Facts @{
+    return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{
         action              = 'ready'
         python              = $venvPython
         project_version     = $projectVersion
         dependency_versions = @($versions)
         database            = $dbPath
-        token_file          = $tokenPath
-        client_file         = $clientPath
-        lan_ip              = $chosen
     }
 }
 
@@ -1075,20 +1030,9 @@ if (-not $DryRun) {
             Write-InstallLog "Gateway URL: http://${address}:$ApiPort/v1"
         }
     }
-    Write-InstallLog "Copy the API token from $(Join-Path $InstallRoot 'secrets\mac-client.json'). That file is limited to the current user."
-    Write-InstallLog 'On the Mac, save it in ~/.config/local-ai-switchboard/client.json and restrict the file to the owner.'
+    Write-InstallLog 'The gateway does not use a password or API token. Open CoDesign and the Mac client use the Gateway URL only.'
     if ($Profile -eq 'Design') {
         Write-InstallLog 'Image generation: not ready. A missing or untested workflow does not change gateway, Ollama, or ComfyUI readiness.'
-    }
-}
-if (-not $Silent -and -not $DryRun) {
-    $show = Read-Host 'Type SHOW to print the API token once'
-    if ($show -eq 'SHOW') {
-        $tokenValue = [System.IO.File]::ReadAllText((Join-Path $InstallRoot 'secrets\token.txt')).Trim()
-        Write-Host $tokenValue
-        $script:RedactValue = $tokenValue
-        Write-InstallLog 'The API token was displayed at the operator request.'
-        $tokenValue = $null
     }
 }
 if ($DryRun) {

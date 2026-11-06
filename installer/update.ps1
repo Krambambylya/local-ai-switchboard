@@ -4,7 +4,7 @@
     Reinstall the gateway package from a local source tree.
 
 .DESCRIPTION
-    Keeps .env, the token, models, data, and logs. Refuses a source version
+    Keeps .env, models, data, and logs. Refuses a source version
     older than the installed package unless -AllowDowngrade is set.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -61,7 +61,7 @@ if ((Compare-DottedVersion -Left $sourceVersion -Right $installedVersion) -lt 0 
     exit 1
 }
 if ($DryRun) {
-    Write-InstallLog 'Would stop the gateway, reinstall the local project, and leave models, data, secrets, and .env in place.'
+    Write-InstallLog 'Would stop the gateway, reinstall the local project, and leave models, data, and .env in place.'
     Write-InstallLog 'Dry run finished. No component was installed.'
     exit 0
 }
@@ -106,5 +106,5 @@ if ($wasRunning) {
         exit 1
     }
 }
-Write-InstallLog "Gateway package $updatedVersion is imported. Models, data, secrets, and .env were left in place."
+Write-InstallLog "Gateway package $updatedVersion is imported. Models, data, and .env were left in place."
 exit 0

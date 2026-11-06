@@ -4,15 +4,14 @@
     Remove the gateway task, firewall rule, and virtual environment.
 
 .DESCRIPTION
-    Models, data, logs, secrets, and the ComfyUI portable tree stay in place
-    unless the matching removal switch is set.
+    Models, data, logs, and the ComfyUI portable tree stay in place
+    unless the matching removal switch is set. The gateway has no credential file.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallRoot,
     [switch]$Silent,
     [switch]$RemoveData,
-    [switch]$RemoveSecrets,
     [switch]$RemoveModels,
     [switch]$RemoveFirewallOnly
 )
@@ -44,9 +43,6 @@ if (-not $Silent -and -not $DryRun) {
     }
     if (-not $RemoveData) {
         $RemoveData = Confirm-InstallStep -Silent $false -DryRun $false -Prompt 'Delete gateway data and logs' -DefaultNo
-    }
-    if (-not $RemoveSecrets) {
-        $RemoveSecrets = Confirm-InstallStep -Silent $false -DryRun $false -Prompt 'Delete the protected token and Mac client file' -DefaultNo
     }
     if (-not $RemoveModels) {
         $RemoveModels = Confirm-InstallStep -Silent $false -DryRun $false -Prompt 'Delete Ollama models stored under the install root' -DefaultNo
@@ -89,9 +85,6 @@ if ($RemoveData) {
     $paths += (Join-Path $InstallRoot 'data')
     $paths += (Join-Path $InstallRoot 'logs')
 }
-if ($RemoveSecrets) {
-    $paths += (Join-Path $InstallRoot 'secrets')
-}
 if ($RemoveModels) {
     $paths += (Join-Path $InstallRoot 'models')
 }
@@ -128,9 +121,6 @@ if ($RemoveModels -and -not $DryRun) {
 }
 if (-not $RemoveData) {
     Write-InstallLog 'Data and logs were kept.'
-}
-if (-not $RemoveSecrets) {
-    Write-InstallLog 'Secrets were kept.'
 }
 if (-not $RemoveModels) {
     Write-InstallLog 'Models and the ComfyUI portable tree were kept.'

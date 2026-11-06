@@ -1,4 +1,4 @@
-"""Request ids for logs. Authorization headers are never written to the log."""
+"""Request ids for logs. Request logs record the method, path, and status."""
 
 from __future__ import annotations
 

@@ -24,8 +24,6 @@ from local_ai_switchboard.providers.ollama import (
 from local_ai_switchboard.scheduler.coordinator import GpuScheduler, ScheduledJob
 from local_ai_switchboard.scheduler.model import JobResult, QueueFull, SchedulerUnavailable
 
-from .auth import authorized, unauthorized
-
 logger = logging.getLogger("local_ai_switchboard.api")
 router = APIRouter()
 
@@ -47,8 +45,6 @@ class DisconnectProbe(Protocol):
 async def list_models(request: Request) -> JSONResponse:
     """List models installed in local Ollama."""
 
-    if not authorized(request):
-        return unauthorized()
     provider = _ollama(request)
     if provider is None:
         return _provider_error("Ollama is not connected")
@@ -63,8 +59,6 @@ async def list_models(request: Request) -> JSONResponse:
 async def chat_completions(request: Request) -> Response:
     """Queue one chat completion on the GPU scheduler and stream the upstream bytes."""
 
-    if not authorized(request):
-        return unauthorized()
     try:
         body = await request.json()
     except ValueError:

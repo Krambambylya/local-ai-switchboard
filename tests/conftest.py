@@ -13,8 +13,6 @@ from local_ai_switchboard.config.settings import Settings
 from local_ai_switchboard.gpu.nvidia_smi import GpuSnapshot
 from local_ai_switchboard.main import create_app
 
-TOKEN = "test-token-value-0123456789abcdef"
-
 
 @pytest.fixture(autouse=True)
 def clear_switchboard_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,21 +22,11 @@ def clear_switchboard_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def token_file(tmp_path: Path) -> Path:
-    path = tmp_path / "secrets" / "token.txt"
-    path.parent.mkdir(parents=True)
-    path.write_text(TOKEN, encoding="utf-8")
-    path.chmod(0o600)
-    return path
-
-
-@pytest.fixture
-def settings(tmp_path: Path, token_file: Path) -> Settings:
+def settings(tmp_path: Path) -> Settings:
     return Settings(
         install_root=tmp_path,
         storage_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
-        token_file=token_file,
     )
 
 

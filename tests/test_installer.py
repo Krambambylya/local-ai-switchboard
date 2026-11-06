@@ -208,8 +208,6 @@ def test_security_and_lifecycle_contracts() -> None:
     assert "SupportsShouldProcess" in update
     assert "LocalSubnet" in common
     assert "-Profile Private" in common
-    assert "RandomNumberGenerator" in common
-    assert "icacls.exe" in common
     assert "qwen3.5:4b" in install
     assert "num_ctx" in install
     assert "8192" in install
@@ -227,7 +225,7 @@ def test_security_and_lifecycle_contracts() -> None:
     assert "AllowDowngrade" in update
     assert "RemoveData" in uninstall
     assert "RemoveModels" in uninstall
-    assert "RemoveSecrets" in uninstall
+    assert "RemoveSecrets" not in uninstall
     assert "enabled -ne $false" in install
     assert "OLLAMA_HOST" in text
     assert "127.0.0.1:11434" in text
@@ -312,11 +310,10 @@ def test_interrupted_download_keeps_partial_and_uses_http_range() -> None:
     assert "It was left in place." in common
 
 
-def test_rerun_keeps_verified_files_token_and_env() -> None:
+def test_rerun_keeps_verified_files_and_env() -> None:
     install = _read("install.ps1")
     common = _read("Common.ps1")
     assert "Save-StateManifest" in install
-    assert "Kept the existing token file" in install
     assert "Kept the existing .env file." in install
     assert "is already present and the checksum matches." in common
     assert "Leaving it in place. Use update.ps1 to change it." in install
@@ -332,14 +329,55 @@ def test_existing_user_configuration_is_not_replaced() -> None:
     assert "differs and was left unchanged" in install
 
 
+def test_installer_and_client_do_not_handle_credentials() -> None:
+    installer = _all_text().lower()
+    client = (ROOT / "client" / "macos" / "generate_asset.py").read_text(encoding="utf-8").lower()
+    example = (ROOT / "client" / "macos" / "config.json.example").read_text(encoding="utf-8")
+    forbidden = (
+        "keychain",
+        "token.txt",
+        "las_token",
+        "las_api_token",
+        "new-gatewaytoken",
+        "replacetoken",
+        "add-generic-password",
+        "find-generic-password",
+        "mac-client.json",
+        "randomnumbergenerator",
+        "icacls",
+        'add_header("authorization"',
+        "bearer ",
+    )
+    for name in forbidden:
+        assert name not in installer, name
+        assert name not in client, name
+    assert "authorization" not in installer
+    payload = json.loads(example)
+    assert list(payload) == ["gateway_url"]
+    api = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "src" / "local_ai_switchboard" / "api").glob("*.py")
+    )
+    settings = (ROOT / "src" / "local_ai_switchboard" / "config" / "settings.py").read_text(encoding="utf-8")
+    assert "authorized(" not in api
+    assert "from .auth import" not in api
+    assert "access_token" not in settings
+    assert not (ROOT / "src" / "local_ai_switchboard" / "api" / "auth.py").exists()
+
+
 def test_firewall_rule_stays_private_and_local_subnet() -> None:
     common = _read("Common.ps1")
     install = _read("install.ps1")
-    assert "New-NetFirewallRule" in common
-    assert "-Profile Private" in common
-    assert "-RemoteAddress LocalSubnet" in common
+    rule = next(line for line in common.splitlines() if "New-NetFirewallRule" in line)
+    assert "-Profile Private" in rule
+    assert "-RemoteAddress LocalSubnet" in rule
+    assert "Public" not in rule
+    assert "Domain" not in rule
+    assert "-LocalPort $ApiPort" in rule
+    assert "8787" in install
     assert "needs-admin" in common
     assert "FirewallOnly" in install
+    assert "portproxy" not in _all_text().lower()
     assert common.count("New-NetFirewallRule") == 1
 
 

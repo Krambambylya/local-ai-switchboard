@@ -35,7 +35,7 @@ def test_derived_directories_follow_install_root(tmp_path: Path) -> None:
     settings = Settings(install_root=tmp_path)
     assert settings.resolved_storage_dir() == (tmp_path / "data").absolute()
     assert settings.resolved_log_dir() == (tmp_path / "logs").absolute()
-    assert settings.resolved_token_file() == (tmp_path / "secrets" / "token.txt").absolute()
+    assert "token_file" not in Settings.model_fields
 
 
 def test_storage_dir_override_keeps_spaces_and_unicode(tmp_path: Path) -> None:
@@ -49,6 +49,15 @@ def test_relative_storage_dir_becomes_absolute(tmp_path: Path, monkeypatch: pyte
     settings = Settings(install_root=tmp_path, storage_dir=Path("custom data"))
     assert settings.resolved_storage_dir() == (tmp_path / "custom data").absolute()
     assert settings.resolved_storage_dir().is_absolute()
+
+
+def test_token_environment_variables_are_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAS_INSTALL_ROOT", str(tmp_path))
+    monkeypatch.setenv("LAS_TOKEN_FILE", str(tmp_path / "secrets" / "token.txt"))
+    monkeypatch.setenv("LAS_API_TOKEN", "test-token-value-0123456789abcdef")
+    settings = Settings()
+    assert "token_file" not in Settings.model_fields
+    assert "test-token-value-0123456789abcdef" not in repr(settings)
 
 
 def test_environment_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,9 +113,10 @@ def test_absolute_path_expands_user(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert expanded == (tmp_path / "AI data").absolute()
 
 
-def test_repr_does_not_include_token_file_contents(tmp_path: Path, token_file: Path) -> None:
-    settings = Settings(install_root=tmp_path, token_file=token_file)
+def test_repr_does_not_include_provider_credentials(tmp_path: Path) -> None:
+    settings = Settings(install_root=tmp_path)
     rendered = repr(settings)
-    assert "test-token-value-0123456789abcdef" not in rendered
+    assert "password" not in rendered
+    assert "token" not in rendered
     if sys.platform == "win32":
         assert settings.install_root.drive

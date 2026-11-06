@@ -30,7 +30,7 @@ if (Test-Path -LiteralPath $envFile) {
         }
         $parts = $line.Split('=', 2)
         $name = $parts[0].Trim()
-        if (-not $name -or ($name -notlike 'LAS_*' -and $name -notlike 'OLLAMA_*') -or $name -eq 'LAS_API_TOKEN') {
+        if (-not $name -or ($name -notlike 'LAS_*' -and $name -notlike 'OLLAMA_*')) {
             continue
         }
         Set-Item -Path "Env:$name" -Value $parts[1]

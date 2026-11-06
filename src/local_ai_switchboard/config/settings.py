@@ -67,7 +67,6 @@ class Settings(BaseSettings):
     install_root: Path = Field(default_factory=default_install_root)
     storage_dir: Path | None = None
     log_dir: Path | None = None
-    token_file: Path | None = None
     ollama_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:11434")
     comfyui_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:8188")
     comfyui_portable_dir: Path | None = None
@@ -128,7 +127,6 @@ class Settings(BaseSettings):
         self.install_root = root
         self.storage_dir = absolute_path(self.storage_dir or root / "data")
         self.log_dir = absolute_path(self.log_dir or root / "logs")
-        self.token_file = absolute_path(self.token_file or root / "secrets" / "token.txt")
         if self.comfyui_portable_dir is not None:
             self.comfyui_portable_dir = absolute_path(self.comfyui_portable_dir)
         if self.workflows_dir is not None:
@@ -148,38 +146,6 @@ class Settings(BaseSettings):
         if self.log_dir is None:
             raise RuntimeError("log directory was not resolved")
         return self.log_dir
-
-    def resolved_token_file(self) -> Path:
-        """Return the configured token file path."""
-
-        if self.token_file is None:
-            raise RuntimeError("token file was not resolved")
-        return self.token_file
-
-    def access_token(self) -> str | None:
-        """Return the bearer token, or None when the file is missing or too short.
-
-        Callers must not write the token to a log, a response, or an exception.
-        """
-
-        path = self.resolved_token_file()
-        if not path.is_file():
-            return None
-        try:
-            token = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        if len(token) < 16:
-            return None
-        return token
-
-    def redaction_secrets(self) -> tuple[str, ...]:
-        """Return secret values that logs must hide."""
-
-        token = self.access_token()
-        if token is None:
-            return ()
-        return (token,)
 
     def __repr__(self) -> str:
         return (

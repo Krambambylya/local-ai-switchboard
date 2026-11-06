@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Save a Gateway image into a local project directory.
 
-The script uses the Python standard library. Configuration is read from
-~/.config/local-ai-switchboard/client.json. The bearer token is never printed.
+The script uses the Python standard library. Configuration is the Gateway URL in
+~/.config/local-ai-switchboard/config.json. The Gateway does not use credentials.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_CONFIG = Path.home() / ".config" / "local-ai-switchboard" / "client.json"
+DEFAULT_CONFIG = Path.home() / ".config" / "local-ai-switchboard" / "config.json"
+_SECRET_KEYS = frozenset({"token", "api_key", "authorization", "password", "secret"})
 TIMEOUT_SECONDS = 30.0
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0, 4.0, 8.0)
@@ -46,40 +47,27 @@ def config_path() -> Path:
 
 
 def load_config(path: Path) -> dict[str, str]:
-    """Read the gateway URL and token. Refuse a config other users can read."""
+    """Read the gateway URL. Refuse a config that stores a credential."""
 
     if not path.is_file():
         raise ClientError(f"client configuration was not found: {path}")
-    if os.name == "posix":
-        stat = path.stat()
-        if stat.st_mode & 0o077:
-            raise ClientError("client configuration must be readable only by the current user")
-        if stat.st_uid != os.getuid():
-            raise ClientError("client configuration must be owned by the current user")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ClientError("client configuration is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ClientError("client configuration must be a JSON object")
+    present = _SECRET_KEYS.intersection(payload)
+    if present:
+        names = ", ".join(sorted(present))
+        raise ClientError(f"client configuration must not contain credentials: {names}")
     url = payload.get("gateway_url")
-    token = payload.get("token")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
         raise ClientError("gateway_url must be an http or https URL")
     remainder = url.split("://", 1)[1]
     if "@" in remainder:
         raise ClientError("gateway_url must not contain credentials")
-    if not isinstance(token, str) or len(token.strip()) < 16:
-        raise ClientError("token must be at least 16 characters")
-    return {"gateway_url": url.rstrip("/"), "token": token.strip()}
-
-
-def redact(text: str, token: str | None) -> str:
-    """Hide the bearer token if it appears in a message."""
-
-    if token and token in text:
-        return text.replace(token, "[REDACTED]")
-    return text
+    return {"gateway_url": url.rstrip("/")}
 
 
 def generate(
@@ -134,10 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--height", type=int)
     parser.add_argument("--seed", type=int)
     args = parser.parse_args(argv)
-    token: str | None = None
     try:
         config = load_config(config_path())
-        token = config["token"]
         saved = generate(
             config,
             prompt=args.prompt,
@@ -148,10 +134,10 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
         )
     except JobFailed as exc:
-        print(redact(str(exc), token), file=sys.stderr)
+        print(str(exc), file=sys.stderr)
         return 2
     except ClientError as exc:
-        print(redact(str(exc), token), file=sys.stderr)
+        print(str(exc), file=sys.stderr)
         return 1
     print(f"saved {saved}", flush=True)
     return 0
@@ -171,7 +157,7 @@ def _poll(config: dict[str, str], job_id: str) -> str:
         if state in _TERMINAL:
             message = body.get("error")
             detail = message if isinstance(message, str) and message else state
-            raise JobFailed(redact(detail, config["token"]))
+            raise JobFailed(detail)
         if time.monotonic() >= deadline:
             raise ClientError("timed out waiting for the image")
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -204,8 +190,6 @@ def _exchange(
             if not _pause(attempt):
                 break
             continue
-        if status == 401:
-            raise ClientError("authentication failed")
         return status, payload
     raise ClientError(last_error)
 
@@ -226,7 +210,6 @@ def _open(
 ) -> tuple[int, bytes]:
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(config["gateway_url"] + path, data=data, method=method)
-    request.add_header("Authorization", "Bearer " + config["token"])
     request.add_header("Accept", "application/json, image/*")
     if data is not None:
         request.add_header("Content-Type", "application/json; charset=utf-8")

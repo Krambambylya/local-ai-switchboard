@@ -80,7 +80,7 @@ def configure_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "switchboard.log"
 
-    secrets = settings.redaction_secrets()
+    secrets: tuple[str, ...] = ()
     redaction_filter = RedactionFilter(secrets)
     formatter = JsonFormatter(secrets)
 

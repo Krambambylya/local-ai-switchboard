@@ -1,7 +1,7 @@
 """Liveness and readiness endpoints.
 
-/health/live is unauthenticated. /health/ready returns only ok or degraded and
-does not include paths, tokens, or GPU details.
+/health/live and /health/ready do not require credentials. Ready returns only
+ok or degraded and does not include paths or GPU details.
 """
 
 from fastapi import APIRouter, Request

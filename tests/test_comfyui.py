@@ -38,7 +38,6 @@ from local_ai_switchboard.scheduler.model import JobStatus, SchedulerConfig, Sch
 from local_ai_switchboard.services.logging import flush_logs
 from local_ai_switchboard.workflows import packaged_workflows_dir
 
-TOKEN = "test-token-value-0123456789abcdef"
 PROMPT = "UNIQUE-IMAGE-PROMPT"
 PNG = b"\x89PNG\r\n\x1a\nfake-image"
 FREE_BODY = {"unload_models": True, "free_memory": True}
@@ -232,10 +231,6 @@ class BoomLauncher:
         raise AssertionError(f"launch was not expected: {argv} {cwd}")
 
 
-def _auth(token: str = TOKEN) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _write_registry(directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "fixture-image.json").write_text(json.dumps(FIXTURE), encoding="utf-8")
@@ -317,7 +312,7 @@ def _wait_job(client: TestClient, job_id: str) -> dict[str, object]:
     deadline = time.monotonic() + 3
     last: dict[str, object] = {}
     while time.monotonic() < deadline:
-        response = client.get(f"/v1/jobs/{job_id}", headers=_auth())
+        response = client.get(f"/v1/jobs/{job_id}")
         assert response.status_code == 200
         last = response.json()
         if last["status"] in {"succeeded", "failed", "cancelled"}:
@@ -369,13 +364,12 @@ def test_bindings_require_an_existing_scalar_input(tmp_path: Path) -> None:
         apply_bindings(manifest, {"prompt": "hello", "width": True})
 
 
-def test_launch_arguments_listen_on_loopback_only(tmp_path: Path, token_file: Path) -> None:
+def test_launch_arguments_listen_on_loopback_only(tmp_path: Path) -> None:
     portable = tmp_path / "ComfyUI_windows_portable"
     settings = Settings(
         install_root=tmp_path,
         storage_dir=tmp_path / "data",
         log_dir=tmp_path / "logs",
-        token_file=token_file,
         comfyui_url="http://127.0.0.1:8190",
         comfyui_portable_dir=portable,
         comfyui_reserve_vram_mb=1024,
@@ -462,12 +456,17 @@ def test_image_lifecycle_uses_the_registered_workflow(
         scheduler=scheduler,
     )
     with TestClient(app) as client:
-        assert client.post("/prompt", headers=_auth(), json={}).status_code == 404
-        assert client.get("/queue", headers=_auth()).status_code == 404
-        assert client.post("/free", headers=_auth(), json={}).status_code == 404
-        assert client.post("/v1/assets", json={"workflow_id": "fixture-image", "prompt": "hi"}).status_code == 401
+        assert client.post("/prompt", json={}).status_code == 404
+        assert client.get("/queue").status_code == 404
+        assert client.post("/free", json={}).status_code == 404
+        open_asset = client.post(
+            "/v1/assets",
+            headers={"Authorization": "Bearer not-a-credential"},
+            json={"workflow_id": "no-such-workflow", "prompt": "hi"},
+        )
+        assert open_asset.status_code == 404
 
-        listed = client.get("/v1/workflows", headers=_auth())
+        listed = client.get("/v1/workflows")
         assert listed.status_code == 200
         by_id = {item["id"]: item for item in listed.json()["workflows"]}
         assert by_id["flux2-klein-4b"]["enabled"] is False
@@ -478,20 +477,17 @@ def test_image_lifecycle_uses_the_registered_workflow(
 
         disabled = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={"workflow_id": "flux2-klein-4b", "prompt": PROMPT},
         )
         assert disabled.status_code == 409
         assert SAMPLE_REASON in disabled.text
         unknown = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={"workflow_id": "no-such-workflow", "prompt": PROMPT},
         )
         assert unknown.status_code == 404
         rejected = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={
                 "workflow_id": "fixture-image",
                 "prompt": PROMPT,
@@ -504,7 +500,6 @@ def test_image_lifecycle_uses_the_registered_workflow(
         assert "output_format" in rejected.text
         graph = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={
                 "workflow_id": "fixture-image",
                 "prompt": PROMPT,
@@ -517,7 +512,6 @@ def test_image_lifecycle_uses_the_registered_workflow(
 
         created = client.post(
             "/v1/assets",
-            headers=_auth(),
             json={"workflow_id": "fixture-image", "prompt": PROMPT, "width": 512, "height": 512},
         )
         assert created.status_code == 202
@@ -554,7 +548,7 @@ def test_image_lifecycle_uses_the_registered_workflow(
         assert stored is not None and stored.workflow is not None
         assert stored.workflow["source"]["inputs"]["text"] == ""
 
-        download = client.get(f"/v1/jobs/{job_id}/download", headers=_auth())
+        download = client.get(f"/v1/jobs/{job_id}/download")
         assert download.status_code == 200
         assert download.content == PNG
         written = list((settings.resolved_storage_dir() / "outputs" / "images").rglob("*.png"))
@@ -565,7 +559,6 @@ def test_image_lifecycle_uses_the_registered_workflow(
         flush_logs()
         log_text = (settings.resolved_log_dir() / "switchboard.log").read_text(encoding="utf-8")
         assert PROMPT not in log_text
-        assert TOKEN not in log_text
 
     assert server.frees == [FREE_BODY]
 

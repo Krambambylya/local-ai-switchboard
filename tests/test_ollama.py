@@ -28,7 +28,6 @@ from local_ai_switchboard.scheduler.model import (
 )
 from local_ai_switchboard.services.logging import flush_logs
 
-TOKEN = "test-token-value-0123456789abcdef"
 MODEL = "qwen3.5:4b"
 TOOLS = [
     {
@@ -215,10 +214,6 @@ class DisconnectFlag:
         return self.disconnected
 
 
-def _auth(token: str = TOKEN) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _chat(**extra: object) -> dict[str, object]:
     body: dict[str, object] = {
         "model": MODEL,
@@ -258,21 +253,22 @@ def test_routes_do_not_call_ollama_directly() -> None:
 
 def test_gateway_is_not_an_ollama_reverse_proxy(gateway: tuple[TestClient, OllamaServer]) -> None:
     client, server = gateway
-    assert client.get("/api/ps", headers=_auth()).status_code == 404
-    assert client.post("/api/chat", headers=_auth(), json={"model": MODEL}).status_code == 404
-    assert client.post("/v1/completions", headers=_auth(), json={}).status_code == 404
+    assert client.get("/api/ps").status_code == 404
+    assert client.post("/api/chat", json={"model": MODEL}).status_code == 404
+    assert client.post("/v1/completions", json={}).status_code == 404
     assert server.calls == []
 
 
-def test_model_discovery_requires_auth_and_hides_the_raw_catalog(
+def test_model_discovery_does_not_require_authorization(
     gateway: tuple[TestClient, OllamaServer],
 ) -> None:
     client, server = gateway
-    assert client.get("/v1/models").status_code == 401
-    assert client.get("/v1/models", headers=_auth("not-the-token")).status_code == 401
-    response = client.get("/v1/models", headers=_auth())
+    response = client.get("/v1/models")
+    ignored = client.get("/v1/models", headers={"Authorization": "Bearer not-a-credential"})
     assert response.status_code == 200
-    assert TOKEN not in response.text
+    assert ignored.status_code == 200
+    assert ignored.json() == response.json()
+    assert "not-a-credential" not in response.text
     assert "should-not-leak" not in response.text
     assert "4000000000" not in response.text
     created = int(datetime.fromisoformat("2026-01-02T03:04:05+00:00").timestamp())
@@ -284,12 +280,17 @@ def test_model_discovery_requires_auth_and_hides_the_raw_catalog(
     assert ("GET", "/v1/models") not in server.calls
 
 
-def test_chat_requires_auth(gateway: tuple[TestClient, OllamaServer]) -> None:
+def test_chat_does_not_require_authorization(gateway: tuple[TestClient, OllamaServer]) -> None:
     client, server = gateway
     response = client.post("/v1/chat/completions", json=_chat())
-    assert response.status_code == 401
-    assert response.json()["error"]["type"] == "authentication_error"
-    assert server.calls == []
+    ignored = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer not-a-credential"},
+        json=_chat(),
+    )
+    assert response.status_code == 200
+    assert ignored.status_code == 200
+    assert server.calls
 
 
 def test_unsupported_fields_are_named_and_not_forwarded(
@@ -298,7 +299,6 @@ def test_unsupported_fields_are_named_and_not_forwarded(
     client, server = gateway
     response = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(tool_choice="auto", n=1, logit_bias={"1": 1}, user="alice", keep_alive=0),
     )
     assert response.status_code == 400
@@ -314,7 +314,6 @@ def test_remote_image_is_rejected_and_base64_is_forwarded(
     client, server = gateway
     remote = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(
             messages=[
                 {
@@ -342,7 +341,6 @@ def test_remote_image_is_rejected_and_base64_is_forwarded(
     ]
     accepted = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(messages=messages),
     )
     assert accepted.status_code == 200
@@ -357,7 +355,6 @@ def test_streaming_preserves_sse_tool_calls_and_reasoning(
     server.completion = SSE
     response = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(stream=True, tools=TOOLS),
     )
     assert response.status_code == 200
@@ -369,14 +366,12 @@ def test_streaming_preserves_sse_tool_calls_and_reasoning(
     flush_logs()
     text = (settings.resolved_log_dir() / "switchboard.log").read_text(encoding="utf-8")
     assert "UNIQUE-PROMPT-DO-NOT-LOG" not in text
-    assert TOKEN not in text
 
 
 def test_non_streaming_preserves_tool_calls(gateway: tuple[TestClient, OllamaServer]) -> None:
     client, server = gateway
     response = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(tools=TOOLS),
     )
     assert response.status_code == 200
@@ -393,12 +388,12 @@ def test_unreachable_ollama_fails_the_job_and_stays_retryable(
 ) -> None:
     client, server = gateway
     server.fail_version = True
-    failed = client.post("/v1/chat/completions", headers=_auth(), json=_chat())
+    failed = client.post("/v1/chat/completions", json=_chat())
     assert failed.status_code == 503
     assert failed.json()["error"]["message"] == "Ollama is not reachable"
     assert server.completion_bodies == []
     server.fail_version = False
-    recovered = client.post("/v1/chat/completions", headers=_auth(), json=_chat())
+    recovered = client.post("/v1/chat/completions", json=_chat())
     assert recovered.status_code == 200
 
 
@@ -408,7 +403,6 @@ def test_missing_model_does_not_start_a_completion(
     client, server = gateway
     response = client.post(
         "/v1/chat/completions",
-        headers=_auth(),
         json=_chat(model="missing:model"),
     )
     assert response.status_code == 404
@@ -418,8 +412,8 @@ def test_missing_model_does_not_start_a_completion(
 def test_second_chat_does_not_unload(gateway: tuple[TestClient, OllamaServer]) -> None:
     client, server = gateway
     provider = client.app.state.ollama_provider
-    first = client.post("/v1/chat/completions", headers=_auth(), json=_chat())
-    second = client.post("/v1/chat/completions", headers=_auth(), json=_chat())
+    first = client.post("/v1/chat/completions", json=_chat())
+    second = client.post("/v1/chat/completions", json=_chat())
     assert first.status_code == 200
     assert second.status_code == 200
     assert provider.prepare_calls == 1
@@ -445,7 +439,7 @@ def test_process_exit_sends_native_unload(
         },
     )
     with TestClient(app) as client:
-        assert client.post("/v1/chat/completions", headers=_auth(), json=_chat()).status_code == 200
+        assert client.post("/v1/chat/completions", json=_chat()).status_code == 200
         assert server.unloads == []
     assert server.unloads == [{"model": MODEL, "messages": [], "keep_alive": 0}]
     assert any(path == "/api/ps" for _method, path in server.calls)

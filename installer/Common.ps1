@@ -5,7 +5,6 @@ Set-StrictMode -Version 2.0
 
 $script:InstallerDirectory = $PSScriptRoot
 $script:LogPath = $null
-$script:RedactValue = ''
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -18,9 +17,6 @@ function Write-InstallLog {
         [Parameter(Mandatory = $true)][string]$Message,
         [ValidateSet('INFO', 'WARN', 'ERROR')][string]$Level = 'INFO'
     )
-    if ($script:RedactValue -and $script:RedactValue.Length -ge 16) {
-        $Message = $Message.Replace($script:RedactValue, '[REDACTED]')
-    }
     $line = '{0} {1} {2}' -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'), $Level, $Message
     if ($script:LogPath) {
         Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8
@@ -91,9 +87,6 @@ function Write-InstallManifest {
         [switch]$DryRun
     )
     $json = $Manifest | ConvertTo-Json -Depth 8
-    if ($script:RedactValue -and $script:RedactValue.Length -ge 16) {
-        $json = $json.Replace($script:RedactValue, '[REDACTED]')
-    }
     if ($DryRun) {
         Write-InstallLog 'Would write config\installed.json.'
         return
@@ -132,71 +125,6 @@ function Test-IsAdministrator {
 
 function Get-CurrentUserName {
     return [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-}
-
-function Protect-UserOnlyPath {
-    param([Parameter(Mandatory = $true)][string]$LiteralPath)
-    $user = Get-CurrentUserName
-    $isDirectory = Test-Path -LiteralPath $LiteralPath -PathType Container
-    & icacls.exe $LiteralPath /inheritance:r | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "icacls could not remove inherited access on $LiteralPath"
-    }
-    $grant = if ($isDirectory) { "${user}:(OI)(CI)(F)" } else { "${user}:(F)" }
-    & icacls.exe $LiteralPath /grant:r $grant | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "icacls could not grant the current user access to $LiteralPath"
-    }
-    $acl = Get-Acl -LiteralPath $LiteralPath
-    foreach ($entry in @($acl.Access)) {
-        $identity = [string]$entry.IdentityReference.Value
-        if ($entry.AccessControlType -eq 'Allow' -and $identity -ne $user) {
-            & icacls.exe $LiteralPath /remove $identity | Out-Null
-        }
-    }
-    $acl = Get-Acl -LiteralPath $LiteralPath
-    $allows = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
-    if ($allows.Count -ne 1 -or [string]$allows[0].IdentityReference.Value -ne $user) {
-        throw "The ACL on $LiteralPath still allows another identity."
-    }
-    Write-InstallLog "ACL on $LiteralPath is limited to the current user."
-}
-
-function Get-TokenProtectionStatus {
-    param([Parameter(Mandatory = $true)][string]$LiteralPath)
-    $status = @{
-        Present = $false
-        Length  = 0
-        AclOk   = $false
-    }
-    if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) {
-        return $status
-    }
-    $status.Present = $true
-    $raw = [System.IO.File]::ReadAllText($LiteralPath).Trim()
-    $status.Length = $raw.Length
-    if ($raw.Length -ge 16) {
-        $script:RedactValue = $raw
-    }
-    $raw = $null
-    $user = Get-CurrentUserName
-    $acl = Get-Acl -LiteralPath $LiteralPath
-    $allows = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
-    $status.AclOk = ($allows.Count -eq 1 -and [string]$allows[0].IdentityReference.Value -eq $user)
-    return $status
-}
-
-function New-GatewayToken {
-    $bytes = New-Object byte[] 32
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
-        $rng.GetBytes($bytes)
-    } finally {
-        $rng.Dispose()
-    }
-    $token = ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
-    $script:RedactValue = $token
-    return $token
 }
 
 function Read-ProjectVersion {

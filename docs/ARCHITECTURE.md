@@ -18,7 +18,7 @@ The LAN restriction for the gateway is the Windows firewall rule created by `ins
 
 Chat:
 
-1. `POST /v1/chat/completions` checks the bearer token.
+1. `POST /v1/chat/completions` does not check a credential.
 2. Fields outside the allowlist are rejected and are not stripped.
 3. The request is queued on the GPU scheduler as an LLM job.
 4. The lease is held until the SSE body ends, the non-streaming body is collected, or the client disconnects.
@@ -26,7 +26,7 @@ Chat:
 
 Image:
 
-1. `POST /v1/assets` checks the bearer token and the workflow registry.
+1. `POST /v1/assets` checks the workflow registry and does not check a credential.
 2. Unknown workflow ids return 404. A disabled workflow returns 409. A client-supplied graph returns 400.
 3. The job is queued on the same scheduler. The HTTP response is `202` with the job id.
 4. The provider submits only the registered API graph to ComfyUI `POST /prompt`.

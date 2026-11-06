@@ -11,7 +11,7 @@ In Open CoDesign's OpenAI-compatible provider settings, use:
 | Setting | Value |
 | --- | --- |
 | Base URL | `http://<windows-lan-ip>:8787/v1` |
-| API key | The bearer token from the Windows file `secrets\mac-client.json` |
+| API key | Leave empty. The Gateway does not check a key. |
 | Model | `qwen3.5:4b`, or `qwen3.5:4b-ctx8192` after the Design installer creates that profile |
 
 The base URL ends in `/v1`. The gateway then serves `POST /v1/chat/completions` and `GET /v1/models`. Health checks are `GET /health/live` and `GET /health/ready` on the host root, not under `/v1`.
@@ -32,7 +32,7 @@ These request fields are accepted: `model`, `messages`, `stream`, `tools`, `temp
 
 Any other field, including `tool_choice`, `n`, `logit_bias`, `user`, and `keep_alive`, returns HTTP 400 and names the field. The gateway does not drop the field and continue. A remote image URL in a message returns 400. A base64 data URL is forwarded.
 
-`GET /v1/models` requires the bearer token and returns the local model ids. It does not return Ollama's raw catalog.
+`GET /v1/models` does not require credentials and returns the local model ids. It does not return Ollama's raw catalog.
 
 ## What Open CoDesign cannot do here
 

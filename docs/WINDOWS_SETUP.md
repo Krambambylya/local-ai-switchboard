@@ -19,7 +19,7 @@ Run the checks in Windows PowerShell on the PC after `.\install.ps1 -Profile Des
 - [ ] Disconnecting a streaming client releases the GPU lease and the next request runs.
 - [ ] A forced ComfyUI `/free` that does not actually free memory leaves the scheduler in error and does not start Ollama.
 - [ ] Restarting the gateway during an image job marks that job `interrupted` and does not submit it again.
-- [ ] `secrets\token.txt` and the gateway log do not show the same secret. The log names the token path only.
+- [ ] A request to the gateway from the Mac succeeds with no `Authorization` header.
 - [ ] `doctor.ps1` exits 0 after the install. This has not been observed yet.
 
 ## Commands to use during the checklist
@@ -34,7 +34,7 @@ Get-ScheduledTask -TaskName "Local AI Switchboard"
 .\doctor.ps1
 ```
 
-macOS Terminal, after the token file is in place:
+macOS Terminal, using the Gateway URL and no credential:
 
 ```bash
 curl -sS "http://<windows-lan-ip>:8787/health/live"

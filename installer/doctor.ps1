@@ -229,9 +229,6 @@ Add-DoctorCheck -Name 'firewall' -Ok $firewall.Verified -Detail $firewall.Detail
 $task = Get-GatewayTaskState -InstallRoot $InstallRoot
 Add-DoctorCheck -Name 'startup' -Ok $task.Verified -Detail $task.Detail -Group gateway
 
-$tokenStatus = Get-TokenProtectionStatus -LiteralPath (Join-Path $InstallRoot 'secrets\token.txt')
-Add-DoctorCheck -Name 'token' -Ok ($tokenStatus.Present -and $tokenStatus.Length -ge 16 -and $tokenStatus.AclOk) -Detail "present=$($tokenStatus.Present) length=$($tokenStatus.Length) acl=$($tokenStatus.AclOk)" -Group gateway
-
 $db = Join-Path $InstallRoot 'data\switchboard.db'
 if (Test-Path -LiteralPath $db) {
     $headerBytes = [System.IO.File]::ReadAllBytes($db)
@@ -269,7 +266,7 @@ if ($addresses.Count -eq 0) {
         Write-InstallLog "Gateway URL: http://${address}:$apiPort/v1"
     }
 }
-Write-InstallLog "The API token stays in $(Join-Path $InstallRoot 'secrets\mac-client.json')."
+Write-InstallLog 'The gateway does not use a password or API token.'
 if ($script:failed) {
     exit 1
 }

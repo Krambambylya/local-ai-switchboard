@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import stat
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -52,7 +50,7 @@ class PreflightReport:
 
 
 def run_preflight(settings: Settings, gpu_probe: GpuProbe | None = None) -> PreflightReport:
-    """Check settings, the token file, storage, and nvidia-smi diagnostics."""
+    """Check settings, storage, and nvidia-smi diagnostics."""
 
     probe = gpu_probe or query_nvidia_smi
     snapshot = probe()
@@ -65,7 +63,6 @@ def run_preflight(settings: Settings, gpu_probe: GpuProbe | None = None) -> Pref
             f"bind {settings.api_host}:{settings.api_port}",
         ),
         _storage_check(settings),
-        _token_check(settings),
         _gpu_check(snapshot),
         _memory_check(snapshot, settings.gpu_memory_threshold_mb),
     )
@@ -88,25 +85,6 @@ def _storage_check(settings: Settings) -> Check:
     if not path.exists():
         return Check("storage_dir", "warn", f"storage directory does not exist yet: {path}")
     return Check("storage_dir", "pass", f"storage directory exists: {path}")
-
-
-def _token_check(settings: Settings) -> Check:
-    path = settings.resolved_token_file()
-    if not path.exists():
-        return Check("token_file", "fail", f"token file is missing: {path}")
-    if not path.is_file():
-        return Check("token_file", "fail", f"token file path is not a file: {path}")
-    try:
-        contents = path.read_bytes()
-    except OSError:
-        return Check("token_file", "fail", f"token file is not readable: {path}")
-    if not contents.strip():
-        return Check("token_file", "fail", f"token file is empty: {path}")
-    if sys.platform != "win32":
-        mode = path.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
-            return Check("token_file", "warn", "token file is readable by group or others")
-    return Check("token_file", "pass", "token file is present")
 
 
 def _gpu_check(snapshot: GpuSnapshot) -> Check:
