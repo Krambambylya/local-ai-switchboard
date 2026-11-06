@@ -834,9 +834,31 @@ function Wait-HttpStatus {
     return 0
 }
 
+function Get-ConfiguredApiPort {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [int]$DefaultPort = 8787
+    )
+    $envFile = Join-Path $InstallRoot '.env'
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        return $DefaultPort
+    }
+    foreach ($line in @(Get-Content -LiteralPath $envFile)) {
+        if ($line -match '^\s*LAS_API_PORT\s*=\s*([0-9]+)\s*$') {
+            return [int]$Matches[1]
+        }
+    }
+    return $DefaultPort
+}
+
+function Get-FirewallRuleName {
+    param([Parameter(Mandatory = $true)][int]$ApiPort)
+    return "LocalAISwitchboard-$ApiPort"
+}
+
 function Get-GatewayFirewallState {
     param([Parameter(Mandatory = $true)][int]$ApiPort)
-    $name = 'LocalAISwitchboard-8787'
+    $name = Get-FirewallRuleName -ApiPort $ApiPort
     try {
         $rule = Get-NetFirewallRule -Name $name -ErrorAction Stop
     } catch {
@@ -885,7 +907,8 @@ function Install-GatewayFirewall {
         return (New-StageResult -Verified $false -Detail 'Administrator approval is required for the firewall rule.' -Facts @{ action = 'needs-admin' })
     }
     try {
-        New-NetFirewallRule -Name 'LocalAISwitchboard-8787' -DisplayName 'Local AI Switchboard' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ApiPort -Profile Private -RemoteAddress LocalSubnet | Out-Null
+        $ruleName = Get-FirewallRuleName -ApiPort $ApiPort
+        New-NetFirewallRule -Name $ruleName -DisplayName 'Local AI Switchboard' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ApiPort -Profile Private -RemoteAddress LocalSubnet | Out-Null
     } catch {
         Write-InstallLog 'The firewall rule could not be created.' 'ERROR'
         return (New-StageResult -Verified $false -Detail 'The firewall command failed.' -Facts @{ action = 'failed' })
@@ -896,14 +919,15 @@ function Install-GatewayFirewall {
         return (New-StageResult -Verified $false -Detail $created.Detail -Facts @{ action = 'query-mismatch' })
     }
     Write-InstallLog "Firewall rule verified. $($created.Detail)"
-    return (New-StageResult -Verified $true -Detail $created.Detail -Facts @{ action = 'created'; name = 'LocalAISwitchboard-8787' })
+    return (New-StageResult -Verified $true -Detail $created.Detail -Facts @{ action = 'created'; name = (Get-FirewallRuleName -ApiPort $ApiPort) })
 }
 
 function Remove-GatewayFirewall {
     param(
+        [int]$ApiPort = 8787,
         [switch]$DryRun
     )
-    $name = 'LocalAISwitchboard-8787'
+    $name = Get-FirewallRuleName -ApiPort $ApiPort
     if ($DryRun) {
         Write-InstallLog "Would remove firewall rule $name."
         return

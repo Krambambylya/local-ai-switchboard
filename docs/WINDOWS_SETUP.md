@@ -11,7 +11,7 @@ Run the checks in Windows PowerShell on the PC after `.\install.ps1 -Profile Des
 - [ ] The same check shows ComfyUI, when it is running, on `127.0.0.1:8188` only. A stopped ComfyUI is expected between image jobs.
 - [ ] The gateway listens on port `8787`. From the Mac, `http://<windows-lan-ip>:8787/health/live` returns `{"status":"live"}`.
 - [ ] From the Mac, `http://<windows-lan-ip>:11434` and `http://<windows-lan-ip>:8188` do not connect.
-- [ ] The firewall rule `LocalAISwitchboard-8787` is inbound TCP, Private profile, remote address `LocalSubnet`. No router port forward was added.
+- [ ] The firewall rule `LocalAISwitchboard-<port>` is inbound TCP, Private profile, remote address `LocalSubnet`. The default name is `LocalAISwitchboard-8787`. No router port forward was added.
 - [ ] Task Scheduler shows `Local AI Switchboard` as a per-user task at logon. Its action runs `installer` service `start.ps1` for the gateway. After a reboot and sign-in, `/health/live` answers without a manual start.
 - [ ] One streaming chat completes through the gateway. A second chat starts without an Ollama unload between them.
 - [ ] One 768×768 Klein image completes only after Ollama has unloaded and `nvidia-smi` shows enough free memory.

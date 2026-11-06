@@ -29,6 +29,8 @@ def ready(request: Request) -> JSONResponse:
     """Report whether required local configuration is present."""
 
     report = run_preflight(request.app.state.settings, gpu_probe=request.app.state.gpu_probe)
-    status: str = "ok" if report.ready else "degraded"
+    scheduler = request.app.state.scheduler
+    recovered = bool(getattr(scheduler, "recovery_ok", False))
+    status: str = "ok" if report.ready and recovered else "degraded"
     code = 200 if report.ready else 503
     return JSONResponse(ReadyStatus(status=status).model_dump(), status_code=code)

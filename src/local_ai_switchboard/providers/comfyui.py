@@ -7,7 +7,9 @@ are checked afterwards. A disabled registry entry cannot be submitted.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -264,6 +266,20 @@ class ComfyUIProvider:
             return False
         return queue_is_idle(queue) and memory_is_free(stats, self._config.memory_threshold_mb)
 
+    async def occupancy(self) -> str:
+        """Inspect the configured ComfyUI. Do not treat a down port as a process to kill."""
+
+        if not await self.health():
+            return "absent"
+        try:
+            queue = await self._get_json("/queue")
+            stats = await self._get_json("/system_stats")
+        except ProviderError:
+            return "unknown"
+        if queue_is_idle(queue) and memory_is_free(stats, self._config.memory_threshold_mb):
+            return "clear"
+        return "occupied"
+
     async def is_busy(self) -> bool:
         return self._busy
 
@@ -373,6 +389,8 @@ class ComfyUIProvider:
             exchange.outputs.append(
                 StoredImage(filename=stored_name, path=target, media_type=_media_type(stored_name))
             )
+        if exchange.outputs:
+            _write_completion_marker(destination, exchange)
 
     async def _interrupt(self) -> None:
         try:
@@ -389,7 +407,10 @@ class ComfyUIProvider:
         if child is None or child.poll() is not None:
             return
         child.terminate()
-        await asyncio.to_thread(child.wait, 2)
+        exit_code = await asyncio.to_thread(child.wait, 2)
+        if exit_code is None and child.poll() is None:
+            child.kill()
+            await asyncio.to_thread(child.wait, 2)
 
     async def _pause(self) -> None:
         try:
@@ -482,6 +503,22 @@ def _output_images(entry: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         images.extend(image for image in listed if isinstance(image, dict))
     return images
+
+
+def _write_completion_marker(directory: Path, exchange: ImageExchange) -> None:
+    """Record a finished file before SQLite commit so a failed commit can be reconciled."""
+
+    stored = exchange.outputs[0]
+    relative = f"{directory.name}/{stored.filename}"
+    payload = {
+        "output_path": relative,
+        "media_type": stored.media_type,
+        "workflow_id": exchange.workflow_id,
+    }
+    temporary = directory / ".complete.partial"
+    marker = directory / ".complete"
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, marker)
 
 
 def _safe_filename(filename: str) -> str:

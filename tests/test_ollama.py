@@ -253,6 +253,7 @@ def test_routes_do_not_call_ollama_directly() -> None:
 
 def test_gateway_is_not_an_ollama_reverse_proxy(gateway: tuple[TestClient, OllamaServer]) -> None:
     client, server = gateway
+    server.calls.clear()
     assert client.get("/api/ps").status_code == 404
     assert client.post("/api/chat", json={"model": MODEL}).status_code == 404
     assert client.post("/v1/completions", json={}).status_code == 404
@@ -297,6 +298,7 @@ def test_unsupported_fields_are_named_and_not_forwarded(
     gateway: tuple[TestClient, OllamaServer],
 ) -> None:
     client, server = gateway
+    server.calls.clear()
     response = client.post(
         "/v1/chat/completions",
         json=_chat(tool_choice="auto", n=1, logit_bias={"1": 1}, user="alice", keep_alive=0),

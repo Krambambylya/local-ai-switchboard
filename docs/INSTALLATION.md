@@ -30,7 +30,7 @@ The installer:
 - Resumes an interrupted download from the `.partial` file with an HTTP range request. A file is installed only after its pinned size and checksum match. An incomplete `.partial` file is not an installed model.
 - Writes `.env` when that file is absent. A rerun keeps an existing `.env`. The gateway does not generate a password or API token.
 - Sets `OLLAMA_HOST=127.0.0.1:11434` when that user variable is unset. An existing different value is left in place and the model pull stops.
-- Adds one firewall rule, `LocalAISwitchboard-8787`, for the gateway port on the Private profile and `LocalSubnet`.
+- Adds one firewall rule named `LocalAISwitchboard-<port>` for the gateway port on the Private profile and `LocalSubnet`. The default port 8787 keeps the name `LocalAISwitchboard-8787`. A rerun reads `LAS_API_PORT` from an existing `.env` and uses that port for the rule and for health checks. `-ApiPort` applies when `.env` is created, or when `-ForceConfig` replaces it.
 - Registers a per-user logon task that starts the gateway. ComfyUI is not in that task.
 
 Default install root:

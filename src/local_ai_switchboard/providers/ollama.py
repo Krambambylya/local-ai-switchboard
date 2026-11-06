@@ -246,6 +246,23 @@ class OllamaProvider:
             return False
         return not names
 
+    async def occupancy(self) -> str:
+        """Inspect /api/ps. A closed port is absent. A bad response is unknown."""
+
+        try:
+            response = await self._http().request("GET", f"{self._base_url}/api/ps")
+        except httpx.HTTPError:
+            return "absent"
+        if response.status_code != 200:
+            return "unknown"
+        try:
+            payload = response.json()
+        except ValueError:
+            return "unknown"
+        if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+            return "unknown"
+        return "occupied" if payload["models"] else "clear"
+
     async def is_busy(self) -> bool:
         return self._busy
 

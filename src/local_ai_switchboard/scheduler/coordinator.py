@@ -139,13 +139,26 @@ class GpuScheduler:
         self._last_diagnostics: tuple[tuple[str, str], ...] = ()
         self._started = False
         self._stopping = False
+        self._accepting = False
+        self._recovery_ok = False
+        self._recover_lock = asyncio.Lock()
         self._worker: asyncio.Task[None] | None = None
         self._active_task: asyncio.Task[None] | None = None
         self._claimed: ScheduledJob | None = None
         self._listener: Callable[[ScheduledJob], Awaitable[None]] | None = None
 
+    @property
+    def recovery_ok(self) -> bool:
+        """True after startup recovery confirms no managed provider still holds the GPU."""
+
+        return self._recovery_ok
+
     async def start(self) -> None:
-        """Start the single worker. A second live scheduler in this process is refused."""
+        """Recover residual GPU use, then start the single worker.
+
+        Jobs are refused until recovery finishes. A second live scheduler in
+        this process is refused.
+        """
 
         async with self._lock:
             if self._started:
@@ -155,7 +168,20 @@ class GpuScheduler:
                 raise RuntimeError("A GPU scheduler is already running in this process")
             self._stopping = False
             self._started = True
+            self._accepting = False
             GpuScheduler._running = self
+        ok = False
+        try:
+            ok = await self._release_occupied_providers()
+        except Exception:
+            logger.exception("startup GPU recovery failed")
+            ok = False
+        async with self._lock:
+            self._recovery_ok = ok
+            self._accepting = ok
+            if not ok:
+                self._last_error = self._last_error or "startup GPU recovery did not finish"
+                self._assign_state(SchedulerState.ERROR)
             self._worker = asyncio.create_task(self._worker_loop(), name="gpu-scheduler")
 
     async def stop(self) -> None:
@@ -210,6 +236,19 @@ class GpuScheduler:
         async with self._lock:
             if not self._started or self._stopping:
                 raise SchedulerUnavailable("scheduler is not running")
+            errored = self._state is SchedulerState.ERROR
+        if errored:
+            recovered = await self.recover()
+            if not recovered:
+                async with self._lock:
+                    detail = self._last_error or "scheduler is in ERROR"
+                raise SchedulerUnavailable(detail)
+        async with self._lock:
+            if not self._started or self._stopping or not self._accepting:
+                if self._state is SchedulerState.ERROR:
+                    detail = self._last_error or "scheduler is in ERROR"
+                    raise SchedulerUnavailable(detail)
+                raise SchedulerUnavailable("scheduler is not running")
             if self._state is SchedulerState.ERROR:
                 detail = self._last_error or "scheduler is in ERROR"
                 raise SchedulerUnavailable(detail)
@@ -258,20 +297,49 @@ class GpuScheduler:
         if kind is not None:
             await self._providers[kind].cancel(job)
 
-    async def recover(self) -> None:
-        """Leave ERROR after the resident provider reports that its resources are gone."""
+    async def recover(self) -> bool:
+        """Leave ERROR after provider residency and nvidia-smi both show the GPU is free.
 
-        async with self._lock:
-            if self._state is not SchedulerState.ERROR:
-                return
-            resident = self._resident
-        if resident is not None:
-            await self._await_provider_release(self._providers[resident])
-        async with self._lock:
-            self._resident = None
-            self._last_error = None
-            self._assign_state(SchedulerState.IDLE)
-        logger.info("scheduler recovered to IDLE")
+        An HTTP 200 from unload is not enough. Returns False when the wait
+        expires or the scheduler is stopping. One recovery runs at a time.
+        """
+
+        async with self._recover_lock:
+            async with self._lock:
+                if self._stopping:
+                    return False
+                if self._state is not SchedulerState.ERROR:
+                    return self._recovery_ok
+                resident = self._resident
+            try:
+                if resident is not None:
+                    await self._await_provider_release(self._providers[resident])
+                else:
+                    released = await self._release_occupied_providers()
+                    if not released:
+                        return False
+            except ResourceNotReleased as exc:
+                self._last_error = str(exc)
+                self._last_diagnostics = _pairs(exc.diagnostics)
+                return False
+            except ProviderError as exc:
+                self._last_error = str(exc)
+                self._last_diagnostics = _pairs(exc.diagnostics)
+                return False
+            except _ReleaseAborted:
+                return False
+            async with self._lock:
+                if self._stopping or self._state is not SchedulerState.ERROR:
+                    return self._state is not SchedulerState.ERROR
+                self._resident = None
+                self._last_error = None
+                self._last_diagnostics = ()
+                self._recovery_ok = True
+                self._accepting = True
+                self._assign_state(SchedulerState.IDLE)
+                self._wake.set()
+            logger.info("scheduler recovered to IDLE")
+            return True
 
     async def status(self) -> SchedulerStatus:
         async with self._lock:
@@ -300,16 +368,58 @@ class GpuScheduler:
     async def _next_job(self) -> ScheduledJob | None:
         while True:
             async with self._lock:
-                if self._queue:
+                stopping = self._stopping
+                blocked = self._state is SchedulerState.ERROR
+                if self._queue and not blocked:
                     job = self._queue.popleft()
                     job.claimed = True
                     self._claimed = job
                     self._queue_length = len(self._queue)
                     return job
-                if self._stopping:
+                if stopping:
                     return None
-                self._wake.clear()
+                waiting_on_error = blocked and bool(self._queue)
+                if not waiting_on_error:
+                    self._wake.clear()
+            if waiting_on_error:
+                recovered = await self.recover()
+                if not recovered:
+                    await self._clock.sleep(self._config.poll_interval_seconds)
+                continue
             await self._wake.wait()
+
+    async def _release_occupied_providers(self) -> bool:
+        """Unload providers that still report occupancy, then require real headroom.
+
+        A provider that is not running is absent and is left alone. An occupied
+        provider is released and must then report itself clear while nvidia-smi
+        shows enough free memory. Unknown occupancy fails the recovery.
+        """
+
+        occupied: list[ProviderProtocol] = []
+        for provider in self._providers.values():
+            state = await _occupancy(provider)
+            if state == "unknown":
+                self._last_error = f"{provider.kind.value} occupancy could not be inspected"
+                return False
+            if state == "occupied":
+                occupied.append(provider)
+        for provider in occupied:
+            try:
+                await self._await_provider_release(provider)
+            except ResourceNotReleased as exc:
+                self._last_error = str(exc)
+                self._last_diagnostics = _pairs(exc.diagnostics)
+                return False
+            except ProviderError as exc:
+                self._last_error = str(exc)
+                self._last_diagnostics = _pairs(exc.diagnostics)
+                return False
+            except _ReleaseAborted:
+                return False
+        async with self._lock:
+            self._resident = None
+        return True
 
     async def _execute(self, job: ScheduledJob) -> None:
         provider = self._providers[job.kind]
@@ -465,8 +575,22 @@ class GpuScheduler:
         diagnostics: tuple[tuple[str, str], ...] = (),
     ) -> None:
         async with self._lock:
-            self._complete_locked(job, status, error, diagnostics)
-        await self._emit(job)
+            self._complete_locked(job, status, error, diagnostics, resolve=False)
+        try:
+            await self._emit(job)
+        except Exception:
+            logger.exception("job persistence failed for %s", job.id)
+            if job.status is JobStatus.SUCCEEDED:
+                async with self._lock:
+                    job.status = JobStatus.FAILED
+                    job.error = "completion was not stored"
+                try:
+                    await self._emit(job)
+                except Exception:
+                    logger.exception("failed job persistence also failed for %s", job.id)
+        async with self._lock:
+            if not job.done.done():
+                job.done.set_result(job.result())
 
     async def _emit(self, job: ScheduledJob) -> None:
         listener = self._listener
@@ -476,6 +600,8 @@ class GpuScheduler:
             await listener(job)
         except Exception:
             logger.exception("job persistence failed for %s", job.id)
+            if job.status is JobStatus.SUCCEEDED:
+                raise
 
     async def _enter_error(
         self,
@@ -516,6 +642,8 @@ class GpuScheduler:
         status: JobStatus,
         error: str | None,
         diagnostics: tuple[tuple[str, str], ...] = (),
+        *,
+        resolve: bool = True,
     ) -> None:
         if job.status in _TERMINAL:
             return
@@ -527,7 +655,7 @@ class GpuScheduler:
             self._current_job_id = None
         if self._state not in {SchedulerState.ERROR, SchedulerState.STOPPING}:
             self._assign_follow_up_state()
-        if not job.done.done():
+        if resolve and not job.done.done():
             job.done.set_result(job.result())
         logger.info("job %s %s", job.id, status.value)
 
@@ -563,3 +691,22 @@ class GpuScheduler:
 
 def _pairs(values: dict[str, str]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(values.items()))
+
+
+async def _occupancy(provider: ProviderProtocol) -> str:
+    """Return clear, occupied, absent, or unknown without treating HTTP 200 as free VRAM."""
+
+    inspector = getattr(provider, "occupancy", None)
+    if inspector is None:
+        try:
+            released = await provider.resources_released()
+        except Exception:
+            return "unknown"
+        return "clear" if released else "occupied"
+    try:
+        state = await inspector()
+    except Exception:
+        return "unknown"
+    if state not in {"clear", "occupied", "absent", "unknown"}:
+        return "unknown"
+    return state

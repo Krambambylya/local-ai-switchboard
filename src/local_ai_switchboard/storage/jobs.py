@@ -144,6 +144,69 @@ class JobStore:
         with self._lock:
             return self._get_unlocked(job_id)
 
+    def reconcile_completed_outputs(self, output_root: Path) -> int:
+        """Attach files whose completion marker exists but whose success row does not.
+
+        The marker is written after the image bytes and before the SQLite commit.
+        A crash or a failed commit leaves the marker. This does not treat a
+        directory without that marker as a finished image.
+        """
+
+        if not output_root.is_dir():
+            return 0
+        fixed = 0
+        for directory in output_root.iterdir():
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            if _JOB_ID.fullmatch(directory.name) is None:
+                continue
+            marker = directory / ".complete"
+            if not marker.is_file() or marker.is_symlink():
+                continue
+            try:
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            relative = payload.get("output_path")
+            media_type = payload.get("media_type")
+            workflow_id = payload.get("workflow_id")
+            if not isinstance(relative, str) or confined_file(output_root, relative) is None:
+                continue
+            if not isinstance(media_type, str) or not media_type:
+                media_type = "application/octet-stream"
+            current = self.get(directory.name)
+            if (
+                current is not None
+                and current.status == JobStatus.SUCCEEDED.value
+                and current.output_path == relative
+            ):
+                continue
+            now = _timestamp()
+            workflow = current.workflow_id if current is not None else ""
+            if isinstance(workflow_id, str) and workflow_id:
+                workflow = workflow or workflow_id
+            if not workflow:
+                workflow = "reconciled"
+            record = ImageJobRecord(
+                id=directory.name,
+                status=JobStatus.SUCCEEDED.value,
+                workflow_id=workflow,
+                prompt_id=current.prompt_id if current is not None else None,
+                error=None,
+                parameters=dict(current.parameters) if current is not None else {},
+                output_path=relative,
+                media_type=media_type,
+                created_at=current.created_at if current is not None else now,
+                updated_at=now,
+            )
+            self.save(record)
+            fixed += 1
+        if fixed:
+            logger.info("reconciled %s completed image jobs from output files", fixed)
+        return fixed
+
     def recover_interrupted(self) -> int:
         """Mark queued and running image jobs interrupted. Do not queue them again."""
 

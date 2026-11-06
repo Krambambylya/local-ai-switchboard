@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from local_ai_switchboard.config.settings import Settings
 from local_ai_switchboard.gpu.nvidia_smi import GpuSnapshot
 from local_ai_switchboard.main import create_app
+from local_ai_switchboard.providers.unavailable import unavailable_providers
 from local_ai_switchboard.services.logging import flush_logs
 
 
@@ -53,7 +54,7 @@ def test_authorization_header_is_not_written_to_the_log(client: TestClient, sett
 def test_ready_is_ok_without_a_credential_file(tmp_path: Path) -> None:
     settings = Settings(install_root=tmp_path, log_dir=tmp_path / "logs")
     unavailable = GpuSnapshot(False, (), (), "nvidia-smi was not found on PATH")
-    app = create_app(settings, gpu_probe=lambda: unavailable)
+    app = create_app(settings, gpu_probe=lambda: unavailable, providers=unavailable_providers())
     with TestClient(app) as client:
         live = client.get("/health/live")
         ready = client.get("/health/ready", headers={"Authorization": "Bearer not-a-credential"})
@@ -72,7 +73,7 @@ def test_ready_stays_ok_when_gpu_memory_is_low(settings: Settings) -> None:
         (),
         None,
     )
-    app = create_app(settings, gpu_probe=lambda: snapshot)
+    app = create_app(settings, gpu_probe=lambda: snapshot, providers=unavailable_providers())
     with TestClient(app) as client:
         response = client.get("/health/ready")
     assert response.status_code == 200

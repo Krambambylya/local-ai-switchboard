@@ -32,7 +32,7 @@ The gateway no longer publishes `/docs`, `/redoc`, or `/openapi.json`. Those pag
 
 ## Residual risk
 
-The gateway bind is all interfaces and the API does not authenticate callers. A missing or wider firewall rule would expose the API on every network the PC joins. The Private / `LocalSubnet` rule is the network boundary. There is no second authentication system.
+The gateway bind is all interfaces and the API does not authenticate callers. Any device that can reach the PC on the trusted home LAN subnet can call the gateway. A missing or wider firewall rule would expose the API on every network the PC joins. The Private / `LocalSubnet` rule, named `LocalAISwitchboard-<port>`, is the network boundary. There is no application token, password, or second authentication system.
 
 ComfyUI and Ollama are protected by binding to loopback in this program's configuration and launch command. A copy of either program started by something else, listening on `0.0.0.0`, would not be corrected by the gateway. The installer detects that case and stops. That detection has not been observed on a live PC.
 

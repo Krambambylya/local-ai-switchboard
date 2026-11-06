@@ -33,7 +33,7 @@ Image:
 5. Completion is ComfyUI history with `status.completed` true and `status_str` `success`. HTTP 200 from `POST /free` is not treated as free VRAM.
 6. Output files are copied under `storage_dir/outputs/images/<job id>/`. Download resolves that relative path and refuses anything outside the directory.
 
-SQLite at `storage_dir/switchboard.db` stores image job metadata. Chat transcripts are not stored. A gateway restart marks queued or running image jobs `interrupted` and does not submit them again.
+SQLite at `storage_dir/switchboard.db` stores image job metadata. Chat transcripts are not stored. A gateway restart marks queued or running image jobs `interrupted` and does not submit them again. An output directory that already has a `.complete` marker is recorded as succeeded before that restart sweep, so a file written before a failed commit is not discarded. The scheduler does not accept GPU work until startup recovery has inspected Ollama `/api/ps` and ComfyUI, released anything those managed providers still hold, and seen enough free memory from `nvidia-smi` when a release was required. A provider that is not running is left alone.
 
 ## Scheduler
 
@@ -42,7 +42,7 @@ One lease is active. Same-provider work does not unload the resident provider. A
 - The provider reports that it has released. For Ollama that is an empty `GET /api/ps` after native unload. For ComfyUI that is an empty queue plus `vram_free` and `torch_vram_free` at or above the threshold.
 - `nvidia-smi` reports free memory at or above `LAS_GPU_MEMORY_THRESHOLD_MB`. Unknown memory fails closed.
 
-A release timeout or a failed prepare leaves the scheduler in `ERROR` until recovery. A failed run returns the scheduler to idle. Shutdown asks the resident provider to release and, if this process spawned ComfyUI, terminates that child. It does not force-kill it. A ComfyUI process that was already running is left running.
+A release timeout leaves the scheduler in `ERROR`. Queued work waits there until a later recovery sees the provider clear and `nvidia-smi` has enough free memory. A new submission retries that recovery once. It is admitted only when the retry succeeds, and it is refused when the GPU is still not clear. There is no separate recovery command. `/health/ready` is degraded when startup recovery does not finish. A failed run returns the scheduler to idle. Shutdown asks the resident provider to release. If this process spawned ComfyUI, it asks that child to exit, waits, and then stops that process tree if it is still running. A ComfyUI process this gateway did not start is left running.
 
 ## Models
 

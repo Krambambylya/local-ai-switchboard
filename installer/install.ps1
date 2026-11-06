@@ -46,6 +46,13 @@ if (-not $SourceRoot) {
 if (-not $InstallRoot) {
     $InstallRoot = Join-Path $env:USERPROFILE 'AI\local-ai-switchboard'
 }
+if (-not $ForceConfig) {
+    $configuredPort = Get-ConfiguredApiPort -InstallRoot $InstallRoot -DefaultPort $ApiPort
+    if ($configuredPort -ne $ApiPort) {
+        Write-Host "The existing .env sets LAS_API_PORT $configuredPort. -ApiPort $ApiPort was not applied."
+    }
+    $ApiPort = $configuredPort
+}
 
 if ($FirewallOnly) {
     Initialize-InstallLog -Directory (Join-Path $InstallRoot 'logs') -DryRun:$DryRun
@@ -55,7 +62,7 @@ if ($FirewallOnly) {
 }
 
 if (-not $Silent -and -not $DryRun -and -not $PSBoundParameters.ContainsKey('Profile')) {
-    Write-Host 'Design installs the gateway, Ollama, qwen3.5:4b, ComfyUI Portable NVIDIA, and the checksummed FP8 Klein files.'
+    Write-Host 'Design installs the gateway, Ollama, qwen3.5:4b, ComfyUI Portable NVIDIA, the checksummed FP8 Klein diffusion weights, the FP4 text encoder, and the VAE.'
     Write-Host 'Basic skips ComfyUI and the image model files.'
     $choice = Read-Host 'Profile [Design]'
     if ($choice -eq 'Basic') {
@@ -476,6 +483,10 @@ function Install-ComfyModels {
     $portable = Find-ComfyPortableRoot -Path (Join-Path $InstallRoot 'ComfyUI_windows_portable')
     if (-not $portable) {
         return New-StageResult -Verified $false -Detail 'The ComfyUI portable tree is not available for model files.' -Facts @{}
+    }
+    $legacyEncoder = Join-Path $portable 'ComfyUI\models\text_encoders\qwen_3_4b.safetensors'
+    if (Test-Path -LiteralPath $legacyEncoder) {
+        Write-InstallLog 'Left qwen_3_4b.safetensors in place. It is not the FP4 encoder qwen_3_4b_fp4_flux2.safetensors and was not reused.'
     }
     if ($DryRun) {
         foreach ($model in @($Pins.comfy_models)) {

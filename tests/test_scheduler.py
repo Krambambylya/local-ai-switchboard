@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -518,3 +519,122 @@ def test_process_lock_can_be_released(tmp_path: Path) -> None:
     release_process_lock(handle)
     handle = acquire_process_lock(path)
     release_process_lock(handle)
+
+
+async def test_startup_unloads_a_resident_ollama_model() -> None:
+    import httpx
+
+    from local_ai_switchboard.providers.ollama import OllamaProvider
+
+    class Library:
+        def __init__(self) -> None:
+            self.models: list[dict[str, str]] = [{"name": "qwen3.5:4b-ctx8192"}]
+            self.unloads = 0
+
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ps" and request.method == "GET":
+                return httpx.Response(200, json={"models": self.models})
+            if request.url.path == "/api/chat" and request.method == "POST":
+                body = json.loads(request.content.decode("utf-8"))
+                assert body["keep_alive"] == 0
+                self.unloads += 1
+                self.models = []
+                return httpx.Response(200, json={"done": True})
+            return httpx.Response(404)
+
+    library = Library()
+    order: list[str] = []
+    image = FakeProvider(ProviderKind.IMAGE, order)
+    scheduler = GpuScheduler(
+        config=_config(),
+        providers={
+            ProviderKind.LLM: OllamaProvider(
+                "http://127.0.0.1:11434",
+                transport=httpx.MockTransport(library.handler),
+            ),
+            ProviderKind.IMAGE: image,
+        },
+        monitor=ScriptedMonitor(7000),
+        clock=ManualClock(),
+    )
+    await scheduler.start()
+    try:
+        assert library.unloads == 1
+        assert library.models == []
+        assert scheduler.recovery_ok is True
+        assert image.release_calls == 0
+        assert (await scheduler.status()).state is SchedulerState.IDLE
+    finally:
+        await scheduler.stop()
+
+
+async def test_startup_recovery_timeout_refuses_new_work() -> None:
+    order: list[str] = []
+    llm = FakeProvider(ProviderKind.LLM, order)
+    llm.released = False
+    llm.release_succeeds = False
+    scheduler = GpuScheduler(
+        config=_config(),
+        providers={
+            ProviderKind.LLM: llm,
+            ProviderKind.IMAGE: FakeProvider(ProviderKind.IMAGE, order),
+        },
+        monitor=ScriptedMonitor(588),
+        clock=ManualClock(),
+    )
+    await scheduler.start()
+    try:
+        assert scheduler.recovery_ok is False
+        assert (await scheduler.status()).state is SchedulerState.ERROR
+        with pytest.raises(SchedulerUnavailable):
+            await scheduler.submit(ProviderKind.LLM)
+        assert llm.release_calls >= 1
+    finally:
+        await scheduler.stop()
+
+
+async def test_third_job_waits_until_failed_release_recovers(world) -> None:
+    scheduler, llm, image, monitor, _order = world
+    monitor.free_mb = 588
+    first = await scheduler.submit(ProviderKind.LLM)
+    await _until_started(llm)
+    second = await scheduler.submit(ProviderKind.IMAGE)
+    third = await scheduler.submit(ProviderKind.LLM)
+    llm.allow_finish()
+    failed = await _wait(second)
+    assert failed.status is JobStatus.FAILED
+    assert image.prepare_calls == 0
+    assert image.run_calls == 0
+    assert llm.run_calls == 1
+    assert third.status is JobStatus.QUEUED
+    assert (await scheduler.status()).state is SchedulerState.ERROR
+    llm.started.clear()
+    monitor.free_mb = 7000
+    await _until_started(llm)
+    assert llm.run_calls == 2
+    llm.allow_finish()
+    assert (await _wait(third)).status is JobStatus.SUCCEEDED
+    assert (await _wait(first)).status is JobStatus.SUCCEEDED
+    assert (await scheduler.status()).state is SchedulerState.IDLE
+
+
+async def test_submit_retries_recovery_after_an_empty_error(world) -> None:
+    scheduler, llm, image, monitor, _order = world
+    monitor.free_mb = 588
+    first = await scheduler.submit(ProviderKind.LLM)
+    await _until_started(llm)
+    second = await scheduler.submit(ProviderKind.IMAGE)
+    llm.allow_finish()
+    failed = await _wait(second)
+    assert failed.status is JobStatus.FAILED
+    assert image.prepare_calls == 0
+    assert (await _wait(first)).status is JobStatus.SUCCEEDED
+    assert (await scheduler.status()).state is SchedulerState.ERROR
+
+    monitor.free_mb = 7000
+    llm.started.clear()
+    resumed = await scheduler.submit(ProviderKind.LLM)
+    await _until_started(llm)
+    llm.allow_finish()
+    assert (await _wait(resumed)).status is JobStatus.SUCCEEDED
+    assert (await scheduler.status()).state is SchedulerState.IDLE

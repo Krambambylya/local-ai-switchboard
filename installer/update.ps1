@@ -66,7 +66,8 @@ if ($DryRun) {
     exit 0
 }
 
-$wasRunning = (Test-HttpStatus -Url 'http://127.0.0.1:8787/health/live' -TimeoutSeconds 3) -eq 200
+$apiPort = Get-ConfiguredApiPort -InstallRoot $InstallRoot -DefaultPort 8787
+$wasRunning = (Test-HttpStatus -Url "http://127.0.0.1:$apiPort/health/live" -TimeoutSeconds 3) -eq 200
 if ($wasRunning) {
     & (Join-Path $PSScriptRoot 'stop.ps1') -InstallRoot $InstallRoot
 }

@@ -86,6 +86,7 @@ def create_app(
     app.state.gpu_probe = gpu_probe or query_nvidia_smi
     output_root = resolved.resolved_storage_dir() / "outputs" / "images"
     store = JobStore(resolved.resolved_storage_dir() / "switchboard.db")
+    store.reconcile_completed_outputs(output_root)
     store.recover_interrupted()
     if resolved.output_retention_days > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(days=resolved.output_retention_days)

@@ -6,8 +6,8 @@
 .DESCRIPTION
     Gateway, Ollama, and ComfyUI readiness are separate from image workflow
     availability. A missing workflow does not mark the gateway unhealthy.
-    Image generation stays not ready until a validated manifest is registered
-    and a live generation test has been recorded.
+    Image generation is ready only when a manifest is enabled and
+    validate_manifest accepts it. That check does not measure VRAM.
 #>
 [CmdletBinding()]
 param(
@@ -253,8 +253,13 @@ Write-InstallLog "Gateway operational: $gatewayLabel"
 Write-InstallLog "Ollama operational: $ollamaLabel"
 Write-InstallLog "ComfyUI operational: $($script:comfyLabel)"
 Write-InstallLog "Image workflow: $($script:imageWorkflow). $($script:imageDetail)"
-Write-InstallLog 'Image generation: not ready'
-if ($script:imageWorkflow -eq 'unavailable') {
+if ($script:imageWorkflow -eq 'registered, not tested') {
+    Write-InstallLog 'Image generation: ready'
+    Write-InstallLog 'The registered manifest passed validation. This check does not measure VRAM and does not prove a generation on an RTX 4060.'
+} else {
+    Write-InstallLog 'Image generation: not ready'
+}
+if ($script:imageWorkflow -eq 'unavailable' -or $script:imageWorkflow -eq 'not in the Basic profile') {
     Write-InstallLog 'A missing image workflow does not change gateway readiness.'
 }
 

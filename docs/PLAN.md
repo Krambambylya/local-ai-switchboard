@@ -2,7 +2,7 @@
 
 Phase 0 plan. No application code is written until Phase 1 is explicitly started. Each later phase ends with tests, a file list, and a written "what works / what remains" note, then stops.
 
-The gateway no longer authenticates callers. Later sections that describe a bearer token, `secrets\token.txt`, or a token in the Mac client file are the earlier design. The network boundary is the Windows firewall rule: Private profile, `LocalSubnet`, TCP 8787.
+The gateway does not authenticate callers. The network boundary is the Windows firewall rule: Private profile, `LocalSubnet`, and the configured gateway TCP port. Any device on that trusted LAN subnet can call the gateway.
 
 Development is on this Mac. The runtime is the Windows 11 PC with the RTX 4060 8 GB. Mocked pytest runs here. Real GPU behavior is a Windows checklist and is never reported as passed unless it was actually run on that PC.
 
@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 - Mac clients (Cursor, Open CoDesign, browser, `generate_asset.py`) call the Gateway over the private LAN.
-- Gateway default bind is `0.0.0.0:8787`, configurable. One Windows Firewall inbound rule: Private profile, remote address `LocalSubnet`, TCP 8787 only.
+- Gateway default bind is `0.0.0.0:8787`, configurable. One Windows Firewall inbound rule: Private profile, remote address `LocalSubnet`, TCP on the configured gateway port only. The rule name is `LocalAISwitchboard-<port>`.
 - Ollama stays at `http://127.0.0.1:11434`. The installer sets the user environment variable `OLLAMA_HOST=127.0.0.1:11434`. Ollama already defaults to localhost; the variable makes that explicit. The Gateway does not start a second Ollama.
 - ComfyUI is a child process, started only when an image job needs it: `<portable>\python_embeded\python.exe -s ComfyUI\main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch --windows-standalone-build`, plus a configurable `--reserve-vram`. The embedded interpreter is discovered by path, not guessed. A bare `--listen` is forbidden because ComfyUI treats that as `0.0.0.0,::`.
 - Chat holds the GPU lease until the SSE stream ends, the client disconnects, or the job is cancelled. Image jobs hold it until history shows completion and outputs are copied, or until a safe failure.
@@ -38,13 +38,13 @@ Verified API facts that the scheduler will rely on:
 - Image submit is `POST /prompt`. Completion is `GET /history/{prompt_id}` plus an empty running/pending queue. Bytes come from `GET /view?filename&subfolder&type=output`.
 - The official FLUX.2 Klein text-to-image template is a UI subgraph, not a `/prompt` API graph. Node ids will not be invented. The design profile cannot generate images until a real API export from the installed ComfyUI is registered.
 
-VRAM constraint for this exact GPU: Windows display memory plus a loaded Ollama model plus FLUX.2 Klein 4B will not coexist in 8 GB. The practical image setup is the distilled FP8 weights (`flux-2-klein-4b-fp8.safetensors`, `qwen_3_4b.safetensors`, `flux2-vae.safetensors`), 768×768, batch size 1, and a memory gate with a configurable margin (default 1024 MB) before the destination provider starts. If the gate fails, the job fails with diagnostics. The second provider is not started.
+VRAM constraint for this exact GPU: Windows display memory plus a loaded Ollama model plus FLUX.2 Klein 4B will not coexist in 8 GB. The image setup is the FP8 diffusion weights, the FP4 text encoder, and the VAE (`flux-2-klein-4b-fp8.safetensors`, `qwen_3_4b_fp4_flux2.safetensors`, `flux2-vae.safetensors`), 768×768, batch size 1, and a memory gate with a configurable margin (default 1024 MB) before the destination provider starts. This pin does not prove those weights stay fully resident in 8 GB. ComfyUI offloading and a real RTX 4060 run are still required. If the gate fails, the job fails with diagnostics. The second provider is not started. The full-size `qwen_3_4b.safetensors` file is not a substitute.
 
 ## Component responsibilities
 
-- `api/`: HTTP schemas, bearer auth, route handlers. Handlers submit work to the scheduler. They do not call Ollama or ComfyUI themselves.
-- `config/`: Pydantic Settings. Install root, URLs, model name, queue limits, timeouts, memory margin, workflow directory, token file path. Token value is never logged.
-- `scheduler/`: the single GPU authority. FIFO queue, lease token, state machine, transition steps, cancellation, shutdown. A lease generation counter ignores a late release from an older job.
+- `api/`: HTTP schemas and route handlers. Handlers submit work to the scheduler. They do not call Ollama or ComfyUI themselves. Routes do not require a credential.
+- `config/`: Pydantic Settings. Install root, URLs, queue limits, timeouts, memory margin, and workflow directory.
+- `scheduler/`: the single GPU authority. FIFO queue, lease generation, state machine, transition steps, cancellation, shutdown, and startup recovery. A lease generation counter ignores a late release from an older job.
 - `providers/base.py`: health, prepare, run, cancel, release_memory. No GPU work except when the scheduler calls it.
 - `providers/ollama.py`: `/api/tags`, `/api/ps`, `/api/show`, native unload, and transparent proxy of `/v1/chat/completions` including SSE bytes. Unsupported fields return an error body that names them.
 - `providers/comfyui.py`: process start/stop using a fixed argv list (`shell=False`), health, allowlisted workflow submit, `/queue`, `/history/{id}`, `/view`, `/interrupt`, `/free`. No arbitrary workflow JSON from the network.
@@ -62,7 +62,7 @@ Global phases: `IDLE`, `LLM_QUEUED`, `LLM_STARTING`, `LLM_ACTIVE`, `SWITCH_TO_IM
 
 Lock rule: mutate scheduler state under one mutex, and never await a provider while holding it. Provider I/O runs under the lease, outside the mutex. That is the deadlock rule.
 
-On Gateway or Windows restart: persisted `queued` and `running` jobs become `interrupted`. Completed files stay. No image workflow is resumed. Scheduler boots `IDLE`.
+On Gateway or Windows restart: persisted `queued` and `running` jobs become `interrupted` unless a completion marker already shows the image file was written. Completed files stay. No image workflow is resumed. Startup recovery inspects Ollama and ComfyUI before the scheduler accepts GPU work. It does not boot straight to `IDLE` while a managed provider still holds VRAM.
 
 ## Provider transitions
 
@@ -157,26 +157,25 @@ README.md
 pyproject.toml
 ```
 
-Runtime data stays outside git, under the configurable install root: `config/`, `secrets/token.txt`, `logs/`, `data/switchboard.db`, `outputs/images/`, `models/ollama/`, and the ComfyUI portable tree. `.gitignore` excludes those plus `.env`.
+Runtime data stays outside git, under the configurable install root: `config/`, `logs/`, `data/switchboard.db`, `outputs/images/`, `models/ollama/`, and the ComfyUI portable tree. `.gitignore` excludes those plus `.env`. The gateway does not create a secret file.
 
 HTTP surface, matching the spec:
 
-- Unauthenticated: `GET /health/live`, and `GET /health/ready` with only `ok` or `degraded`. No paths, token, or GPU detail.
-- Bearer required everywhere else: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/assets`, `GET /v1/jobs/{job_id}`, `GET /v1/jobs/{job_id}/download`, `GET /admin/status`, `GET /admin/gpu`, `GET /admin/providers`.
-- Chat is OpenAI-shaped SSE. Images return a job id immediately. Download is authorized and confined to the managed output directory.
+- Every route works without a credential: `GET /health/live`, `GET /health/ready` with only `ok` or `degraded`, `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/assets`, `GET /v1/jobs/{job_id}`, and `GET /v1/jobs/{job_id}/download`. Ready does not include paths or GPU detail. `/health/ready` is degraded when startup GPU recovery did not finish.
+- Chat is OpenAI-shaped SSE. Images return a job id immediately. Download is confined to the managed output directory.
 - CORS is off. No telemetry. No shell from request input.
 
-Mac client config is `~/.config/local-ai-switchboard/client.json`, mode `0600`. The script uses only the Python standard library, retries with a timeout, and never prints the token. Open CoDesign has no ComfyUI provider today. Phase 7 documents the Gateway as an OpenAI-compatible text endpoint and `generate_asset.py` as the image path. It does not add a plugin.
+Mac client config is `~/.config/local-ai-switchboard/config.json` and contains `gateway_url` only. The script uses only the Python standard library and retries with a timeout. Open CoDesign has no ComfyUI provider today. The Gateway is the OpenAI-compatible text endpoint and `generate_asset.py` is the image path. It does not add a plugin.
 
 Installer rules: interactive by default, silent parameters, `-WhatIf`, idempotent reruns, no silent overwrite of config, admin only for the firewall step, no driver changes, no `Invoke-Expression` of downloaded code, pinned assets in `installer/pins.json`. Official model blobs without a published checksum are downloaded only after explicit consent, and the manifest records that limitation. Ollama weights stay in `OLLAMA_MODELS`. Comfy weights stay in the portable model folders. Neither is committed.
 
-Profiles: `Basic` is Gateway, Ollama, `qwen3.5:4b`, GPU monitoring, and auth. `Design` adds ComfyUI Portable NVIDIA, the FP8 Klein assets, the workflow slot, and the Mac client instructions. `Design` is the recommended default. Already installed pieces can be skipped.
+Profiles: `Basic` is Gateway, Ollama, `qwen3.5:4b`, and GPU monitoring. `Design` adds ComfyUI Portable NVIDIA, the FP8 Klein diffusion weights, the FP4 text encoder, the VAE, the workflow slot, and the Mac client instructions. `Design` is the recommended default. Already installed pieces can be skipped.
 
 Startup is a per-user scheduled task at logon, not a Windows service, so CUDA stays in the user session and elevation stays optional. The task restarts the Gateway on failure. It does not restart a half-finished image job.
 
 ## Main technical risks
 
-- 8 GB is tight. `qwen3.5:4b` can occupy several GB with context, and Klein 4B FP8 plus the Qwen3 4B text encoder plus Windows WDDM can exceed 8 GB if unload is incomplete. The memory gate and 768×768 default exist because of this. FP16 Klein is out of scope.
+- 8 GB is tight. `qwen3.5:4b` can occupy several GB with context. Klein 4B FP8 plus the FP4 Qwen3 text encoder plus Windows WDDM can still exceed 8 GB if unload is incomplete or ComfyUI keeps weights resident. The FP4 pin is smaller than the old full-size encoder, and it still does not prove an all-VRAM fit. The memory gate and 768×768 default exist because of this. FP16 Klein is out of scope. ComfyUI offloading and an RTX 4060 measurement remain required.
 - `POST /free` and Ollama unload are both asynchronous. Polling `/api/ps`, `/queue`, `/system_stats`, and `nvidia-smi` compute apps is required. A timeout must fail closed.
 - ComfyUI's compute app name is `python.exe`, so process name alone cannot identify ownership. Provider residency APIs are the primary signal. `nvidia-smi` is corroboration.
 - The official Klein template cannot be submitted as-is to `/prompt`. Shipping a hand-written node graph would violate the spec. Image generation stays disabled until an API export from that ComfyUI build is bound in the manifest. Tests use a clearly fake graph.
@@ -191,9 +190,9 @@ Phase 1 is the only coding phase authorized after approval. Phases 2–8 stay wr
 
 ### Phase 1: skeleton, settings, logging, health, preflight
 
-Create the package, `pyproject.toml` (FastAPI, Uvicorn, Pydantic Settings, httpx, pytest, pytest-asyncio), settings, JSON logging with rotation and redaction, request ids, `GET /health/live` and `GET /health/ready`, and a preflight report that checks config, token file presence, and configured URLs without starting providers.
+Create the package, `pyproject.toml` (FastAPI, Uvicorn, Pydantic Settings, httpx, pytest, pytest-asyncio), settings, JSON logging with rotation and redaction, request ids, `GET /health/live` and `GET /health/ready`, and a preflight report that checks config and configured URLs without starting providers.
 
-Acceptance: mocked tests show live is open, ready does not leak secrets, logs omit bearer tokens, and settings reject an unsafe bind for Ollama or ComfyUI. Pytest passes on this Mac.
+Acceptance: mocked tests show live is open, ready does not leak secrets, logs redact credential-shaped text, and settings reject an unsafe bind for Ollama or ComfyUI. Pytest passes on this Mac.
 
 ### Phase 2: GPU monitor and scheduler core
 
@@ -205,7 +204,7 @@ Acceptance: tests cover serialization, no reload between two LLM jobs, both tran
 
 Implement the Ollama adapter and `GET /v1/models` plus `POST /v1/chat/completions`, including SSE pass-through, tools, and base64 images. Reject unsupported fields. Unload and `/api/ps` are used only by the scheduler.
 
-Acceptance: tests 1, 2, 6, 8, and 12 that apply to chat pass against a mocked Ollama. A direct provider call from a route is absent. Auth failures return 401.
+Acceptance: tests 1, 2, 6, 8, and 12 that apply to chat pass against a mocked Ollama. A direct provider call from a route is absent. Chat does not require a credential.
 
 ### Phase 4: ComfyUI process control and image jobs
 
@@ -217,23 +216,23 @@ Acceptance: tests 3, 4, 5, 7, 9, 10, and 14 pass with mocks. The FLUX file is no
 
 Add SQLite job metadata, safe filenames, retention, restart recovery, and `client/macos/generate_asset.py`.
 
-Acceptance: tests 11, 13, 15, and 16 pass. Restart marks an in-flight image job `interrupted` and does not resubmit it. Path traversal and odd Unicode paths fail or save only inside the allowed directory. The client test uses a local mocked Gateway and does not print the token.
+Acceptance: tests 11, 13, 15, and 16 pass. Restart marks an in-flight image job `interrupted` and does not resubmit it. Path traversal and odd Unicode paths fail or save only inside the allowed directory. The client test uses a local mocked Gateway and does not send a credential.
 
 ### Phase 6: Windows installer and lifecycle
 
-Add the six PowerShell scripts, `pins.json`, profile selection, token generation, firewall rule, user logon task, and version manifest. Include `-WhatIf`.
+Add the six PowerShell scripts, `pins.json`, profile selection, the firewall rule, the user logon task, and the version manifest. Include `-WhatIf`. Do not generate a token.
 
 Acceptance: script review shows idempotency, no unconditional `Invoke-Expression`, no driver installation, and localhost binds for both providers. A dry-run text test can run only if PowerShell is available; otherwise the gap is documented. Live install is part of the Windows checklist, not a Mac claim.
 
 ### Phase 7: Open CoDesign documentation
 
-Write the Mac and Open CoDesign docs: Gateway base URL `http://<windows-lan-ip>:8787/v1`, bearer token in the app's provider settings, model `qwen3.5:4b`, and image generation through the standard-library script. State that Open CoDesign cannot call ComfyUI directly.
+Write the Mac and Open CoDesign docs: Gateway base URL `http://<windows-lan-ip>:8787/v1`, an empty API key, model `qwen3.5:4b`, and image generation through the standard-library script. State that Open CoDesign cannot call ComfyUI directly.
 
 Acceptance: every command is labeled Windows PowerShell or macOS Terminal, and the examples use the RTX 4060 / M1 setup.
 
 ### Phase 8: security pass, tests, and the remaining docs
 
-Finish README, architecture, installation, Windows setup, workflow setup, troubleshooting, security, and testing docs. Add the Windows hardware checklist. Review auth, path checks, log redaction, queue limits, CORS, and firewall scope.
+Finish README, architecture, installation, Windows setup, workflow setup, troubleshooting, security, and testing docs. Add the Windows hardware checklist. Review the trusted-LAN boundary, path checks, log redaction, queue limits, CORS, and firewall scope.
 
 Acceptance: the fifteen behavioral scenarios are covered by automated tests or explicitly listed as hardware-only. Docs do not say the RTX 4060 tests passed. `docs/TESTING.md` separates Mac mocked results from the Windows checklist.
 

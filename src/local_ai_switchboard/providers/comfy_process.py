@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +19,9 @@ class ProcessHandle(Protocol):
 
     def terminate(self) -> None:
         """Ask the process to exit. Do not force-kill it."""
+
+    def kill(self) -> None:
+        """Stop this process and the children it spawned. Do not touch other PIDs."""
 
     def wait(self, timeout: float | None = None) -> int | None:
         """Wait for exit. Return None when the timeout expires."""
@@ -87,6 +92,10 @@ class SpawnedProcess:
         if self._process.poll() is None:
             self._process.terminate()
 
+    def kill(self) -> None:
+        if self._process.poll() is None:
+            terminate_process_tree(self._process.pid)
+
     def wait(self, timeout: float | None = None) -> int | None:
         try:
             return self._process.wait(timeout=timeout)
@@ -106,5 +115,27 @@ class SubprocessLauncher:
             cwd=cwd,
             shell=False,
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
         return SpawnedProcess(process)
+
+
+def terminate_process_tree(pid: int) -> None:
+    """Stop one recorded process and its children. Other PIDs are not signaled."""
+
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            return

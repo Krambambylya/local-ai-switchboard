@@ -30,7 +30,7 @@ PINS = {
     "comfy_url": "https://github.com/Comfy-Org/ComfyUI/releases/download/v0.41.0/ComfyUI_windows_portable_nvidia.7z",
     "comfy_sha256": "7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34",
     "fp8_sha256": "97ed34fe0567e436200f2faee3939b88f2b5d99f8af2a4dc16532c4245c0ccb6",
-    "text_sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+    "text_sha256": "3eab03a77adb0ee5304a4e677d5c10ac22f9049c1d7c894adca4f8bb39206ca8",
     "vae_sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
 }
 
@@ -148,11 +148,17 @@ def test_pins_name_exact_vendor_assets() -> None:
     models = {item["filename"]: item for item in pins["comfy_models"]}
     assert set(models) == {
         "flux-2-klein-4b-fp8.safetensors",
-        "qwen_3_4b.safetensors",
+        "qwen_3_4b_fp4_flux2.safetensors",
         "flux2-vae.safetensors",
     }
+    assert "qwen_3_4b.safetensors" not in models
+    text_encoder = models["qwen_3_4b_fp4_flux2.safetensors"]
+    assert text_encoder["checksum"] == PINS["text_sha256"]
+    assert text_encoder["expected_bytes"] == 3848213998
+    assert text_encoder["revision"] == "8556e4d870cda7c53c7942b190bfeea5be9bd411"
+    assert text_encoder["revision"] in text_encoder["url"]
+    assert "/resolve/main/" not in text_encoder["url"]
     assert models["flux-2-klein-4b-fp8.safetensors"]["checksum"] == PINS["fp8_sha256"]
-    assert models["qwen_3_4b.safetensors"]["checksum"] == PINS["text_sha256"]
     assert models["flux2-vae.safetensors"]["checksum"] == PINS["vae_sha256"]
     seven_zip = pins["seven_zip"]
     assert seven_zip["version"] == "26.05"
@@ -169,14 +175,17 @@ def test_pins_name_exact_vendor_assets() -> None:
     assert models["flux-2-klein-4b-fp8.safetensors"]["url"].startswith(
         "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/"
     )
-    assert "Comfy-Org/Flux-2-Klein-4B" in models["qwen_3_4b.safetensors"]["url"]
+    assert "Comfy-Org/Flux-2-Klein-4B" in text_encoder["url"]
     assert "Comfy-Org/Flux-2-Klein-4B" in models["flux2-vae.safetensors"]["url"]
     for item in models.values():
         assert item["checksum"]
         assert item["expected_bytes"] > 0
+        lowered_name = item["filename"].lower()
         lowered = item["url"].lower()
+        assert "fp16" not in lowered_name
         assert "fp16" not in lowered
-        assert "9b" not in lowered
+        assert "9b" not in lowered_name
+        assert "klein-9b" not in lowered
     assert not list(ROOT.glob("**/*.safetensors"))
 
 
@@ -433,3 +442,23 @@ def test_readiness_keeps_a_missing_workflow_out_of_gateway_health() -> None:
     assert "registered, not tested" in doctor
     assert "Invoke-InstallDoctor" in install
     assert "image_generation_tested" in install
+    assert "Image generation: ready" in doctor
+    assert "does not measure VRAM" in doctor
+    assert "$script:gatewayReady = $false" not in image_status
+
+
+def test_existing_env_port_and_firewall_rule_stay_together() -> None:
+    common = _read("Common.ps1")
+    install = _read("install.ps1")
+    update = _read("update.ps1")
+    uninstall = _read("uninstall.ps1")
+    assert "function Get-ConfiguredApiPort" in common
+    assert "function Get-FirewallRuleName" in common
+    assert 'return "LocalAISwitchboard-$ApiPort"' in common
+    assert "LocalAISwitchboard-8787" not in common
+    assert "Get-ConfiguredApiPort" in install
+    assert "was not applied" in install
+    assert "Get-ConfiguredApiPort" in update
+    assert "http://127.0.0.1:8787/health/live" not in update
+    assert "Get-ConfiguredApiPort" in uninstall
+    assert "qwen_3_4b_fp4_flux2.safetensors and was not reused" in install

@@ -30,7 +30,8 @@ $DryRun = [bool]$WhatIfPreference
 
 if ($RemoveFirewallOnly) {
     Initialize-InstallLog -Directory (Join-Path $InstallRoot 'logs') -DryRun:$DryRun
-    Remove-GatewayFirewall -DryRun:$DryRun
+    $apiPort = Get-ConfiguredApiPort -InstallRoot $InstallRoot -DefaultPort 8787
+    Remove-GatewayFirewall -ApiPort $apiPort -DryRun:$DryRun
     exit 0
 }
 
@@ -54,7 +55,8 @@ Write-InstallLog 'Stopping the gateway.'
 Remove-GatewayLogonTask -DryRun:$DryRun
 
 try {
-    Remove-GatewayFirewall -DryRun:$DryRun
+    $apiPort = Get-ConfiguredApiPort -InstallRoot $InstallRoot -DefaultPort 8787
+    Remove-GatewayFirewall -ApiPort $apiPort -DryRun:$DryRun
 } catch {
     if ($DryRun) {
         throw

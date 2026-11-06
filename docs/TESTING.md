@@ -14,7 +14,7 @@ Command, macOS Terminal, repository root:
 .venv/bin/pytest -o addopts=
 ```
 
-Result recorded with this documentation: **114 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and were not executed. The new installer scenario checks are static. They do not download models or install software, and they were not run on Windows.
+Result recorded with this documentation: **122 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and were not executed. The installer scenario checks are static. They do not download models or install software, and they were not run on Windows.
 
 The suite uses Python 3.13 in `.venv` for development. The project requires Python 3.12 or newer. The Windows installer pins the last Python 3.12 build that still has an official Windows installer, which is 3.12.10, and only when the PC does not already have 3.12 or newer.
 
@@ -28,7 +28,7 @@ The suite uses Python 3.13 in `.venv` for development. The project requires Pyth
 | Logs redact bearer-shaped text and secret-shaped fields | `tests/test_logging.py`, `tests/test_health.py` |
 | One scheduler, FIFO, no second worker, queue limit | `tests/test_scheduler.py` |
 | LLM to LLM does not unload. LLM to image and image to LLM wait for release and memory. Unknown memory and release timeout fail closed. | `tests/test_scheduler.py`, `tests/test_ollama.py`, `tests/test_comfyui.py` |
-| Chat is not a reverse proxy. Auth is required. Unsupported fields are named. SSE, tool calls, and reasoning are preserved. The stream holds the lease until cancel. | `tests/test_ollama.py` |
+| Chat is not a reverse proxy. No credential is required. Unsupported fields are named. SSE, tool calls, and reasoning are preserved. The stream holds the lease until cancel. | `tests/test_ollama.py` |
 | ComfyUI launch arguments listen on `127.0.0.1` only. Routes do not call ComfyUI. Image jobs use the scheduler. `/free` 200 is not free VRAM. Unsafe filenames are rejected. | `tests/test_comfyui.py` |
 | The packaged Klein file has no API graph | `test_packaged_sample_has_no_api_graph` |
 | Restart marks an in-flight image job interrupted and does not resubmit it. Download stays inside the output root. | `tests/test_persistence.py` |

@@ -55,7 +55,7 @@ Shape of a manifest before a real graph is pasted into `workflow`. This skeleton
 }
 ```
 
-The installer runs `load_manifest` in the gateway virtual environment. It copies the file only when validation succeeds. If `<id>.json` already exists and its bytes differ, the existing file stays unless `-ForceConfig` is set. Registration is reported as `registered, not tested`. Image generation stays `not ready` until that workflow has also been run successfully on the machine. `doctor.ps1` reports that status separately from gateway, Ollama, and ComfyUI readiness.
+The installer runs `load_manifest` in the gateway virtual environment. It copies the file only when validation succeeds. If `<id>.json` already exists and its bytes differ, the existing file stays unless `-ForceConfig` is set. Registration is reported as `registered, not tested`. `doctor.ps1` then reports image generation ready because the manifest passed validation. That line does not mean a live generation ran, and it does not change gateway, Ollama, or ComfyUI readiness. A missing or disabled workflow stays `Image generation: not ready`.
 
 Restart the gateway after adding or replacing the file. `GET /v1/workflows` lists ids, titles, enabled state, and parameter names. It does not return the graph.
 
@@ -68,7 +68,9 @@ The Design profile downloads these files into the portable tree after checksum v
 | File | Directory |
 | --- | --- |
 | `flux-2-klein-4b-fp8.safetensors` | `ComfyUI/models/diffusion_models` |
-| `qwen_3_4b.safetensors` | `ComfyUI/models/text_encoders` |
+| `qwen_3_4b_fp4_flux2.safetensors` | `ComfyUI/models/text_encoders` |
 | `flux2-vae.safetensors` | `ComfyUI/models/vae` |
 
-Those weights are not in git. FP16 and the 9B Klein model are out of scope.
+The text encoder is the FP4 file from Comfy-Org/Flux-2-Klein-4B at revision `8556e4d870cda7c53c7942b190bfeea5be9bd411`, 3,848,213,998 bytes. `qwen_3_4b.safetensors` is a different full-size file. The installer leaves that file in place and does not treat it as the FP4 pin. These weights are not in git. FP16 and the 9B Klein model are out of scope.
+
+Pinning the FP4 encoder does not show that the FP8 diffusion model, this encoder, and the VAE fit in 8 GB of VRAM at the same time. ComfyUI may offload weights to system RAM. A generation on the RTX 4060 is still required before image generation can be called viable on that GPU.

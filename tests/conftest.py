@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from local_ai_switchboard.config.settings import Settings
 from local_ai_switchboard.gpu.nvidia_smi import GpuSnapshot
 from local_ai_switchboard.main import create_app
+from local_ai_switchboard.providers.unavailable import unavailable_providers
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +43,10 @@ def unavailable_gpu() -> GpuSnapshot:
 
 @pytest.fixture
 def client(settings: Settings, unavailable_gpu: GpuSnapshot) -> Iterator[TestClient]:
-    app = create_app(settings, gpu_probe=lambda: unavailable_gpu)
+    app = create_app(
+        settings,
+        gpu_probe=lambda: unavailable_gpu,
+        providers=unavailable_providers(),
+    )
     with TestClient(app) as test_client:
         yield test_client

@@ -85,6 +85,7 @@ class ComfyServer:
         self.complete_after = 2
         self.history_mode = "success"
         self.free_status = 200
+        self.release_on_free = False
         self.images: list[dict[str, str]] = [
             {"filename": "fixture.png", "subfolder": "", "type": "output"}
         ]
@@ -139,6 +140,11 @@ class ComfyServer:
             return httpx.Response(200, content=PNG)
         if path == "/free":
             self.frees.append(json.loads(request.content))
+            if self.release_on_free:
+                self.vram_free = 8 * 1024**3
+                self.torch_vram_free = 8 * 1024**3
+                self.queue_running = []
+                self.queue_pending = []
             return httpx.Response(self.free_status, json={})
         if path == "/interrupt":
             self.interrupts += 1
@@ -418,6 +424,7 @@ def test_launcher_uses_a_list_and_disables_the_shell(monkeypatch: pytest.MonkeyP
     assert kwargs["shell"] is False
     assert kwargs["cwd"] == tmp_path
     assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
 
 
 def test_routes_do_not_call_comfy_directly() -> None:
@@ -679,8 +686,6 @@ async def test_low_comfy_memory_blocks_the_next_provider_until_recover(
     _write_registry(workflows)
     server = ComfyServer()
     server.complete_after = 1
-    server.vram_free = 1000
-    server.torch_vram_free = 1000
     provider = _provider(settings, workflows, server)
     monitor = Headroom(7000)
     llm = LlmStub()
@@ -689,6 +694,8 @@ async def test_low_comfy_memory_blocks_the_next_provider_until_recover(
     try:
         finished = await _image_job(scheduler)
         assert finished.status is JobStatus.SUCCEEDED
+        server.vram_free = 1000
+        server.torch_vram_free = 1000
         blocked = await scheduler.submit(ProviderKind.LLM)
         outcome = await asyncio.wait_for(blocked.done, timeout=2)
         assert outcome.status is JobStatus.FAILED
@@ -835,6 +842,75 @@ def _stored_files(provider: ComfyUIProvider) -> list[Path]:
     if not provider.output_root.exists():
         return []
     return list(provider.output_root.rglob("*"))
+
+
+async def test_startup_frees_running_comfyui_without_killing_it(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.vram_free = 1000
+    server.torch_vram_free = 1000
+    server.release_on_free = True
+    child = FakeChild()
+    launcher = RecordingLauncher(server, child)
+    provider = _provider(settings, workflows, server, launcher=launcher)
+    scheduler = _scheduler(provider, monitor=Headroom(7000))
+    await scheduler.start()
+    try:
+        assert scheduler.recovery_ok is True
+        assert server.frees == [FREE_BODY]
+        assert launcher.calls == []
+        assert child.terminated is False
+        assert child.killed is False
+        assert (await scheduler.status()).state is SchedulerState.IDLE
+    finally:
+        await scheduler.stop()
+        await provider.aclose()
+
+
+async def test_shutdown_kills_a_child_that_ignores_terminate(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    portable = tmp_path / "ComfyUI_windows_portable"
+    _touch_portable(portable)
+    server = ComfyServer()
+    server.healthy = False
+    server.complete_after = 1
+
+    class StubbornChild(FakeChild):
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int | None:
+            del timeout
+            if self.killed:
+                self.exit_code = -9
+                return -9
+            return None
+
+        def poll(self) -> int | None:
+            return self.exit_code
+
+    child = StubbornChild()
+    launcher = RecordingLauncher(server, child)
+    provider = _provider(settings, workflows, server, portable=portable, launcher=launcher)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        finished = await _image_job(scheduler)
+        assert finished.status is JobStatus.SUCCEEDED
+        assert launcher.calls
+    finally:
+        await scheduler.stop()
+        await provider.aclose()
+    assert child.terminated is True
+    assert child.killed is True
 
 
 def _replaced(provider: ComfyUIProvider, **changes: object) -> ComfyConfig:
