@@ -443,6 +443,167 @@ function Test-Authenticode {
     }
 }
 
+function Restore-FileLength {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int64]$Length
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
+    try {
+        $stream.SetLength($Length)
+    } finally {
+        $stream.Close()
+    }
+}
+
+function Receive-PinnedHttpFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [switch]$Resume,
+        [int64]$ExpectedBytes = 0
+    )
+    $startLength = [int64]0
+    if ($Resume -and (Test-Path -LiteralPath $Destination)) {
+        $startLength = [int64](Get-Item -LiteralPath $Destination).Length
+    }
+    $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
+    $request.UserAgent = 'LocalAISwitchboardInstaller'
+    $request.AllowAutoRedirect = $true
+    if ($startLength -gt 0) {
+        $request.AddRange($startLength)
+    }
+    $response = $null
+    try {
+        try {
+            $response = $request.GetResponse()
+        } catch [System.Net.WebException] {
+            $errorResponse = $_.Exception.Response
+            $statusCode = 0
+            if ($errorResponse) {
+                $statusCode = [int]$errorResponse.StatusCode
+                $errorResponse.Close()
+            }
+            if ($statusCode -eq 416) {
+                return @{ Complete = $false; RangeRejected = $true; StartLength = $startLength }
+            }
+            return @{ Complete = $false; RangeRejected = $false; StartLength = $startLength }
+        }
+        $statusCode = [int]$response.StatusCode
+        if ($startLength -gt 0 -and $statusCode -ne 206) {
+            return @{ Complete = $false; RangeRejected = $true; StartLength = $startLength }
+        }
+        $mode = [System.IO.FileMode]::Create
+        if ($startLength -gt 0 -and $statusCode -eq 206) {
+            $mode = [System.IO.FileMode]::Append
+        }
+        $inputStream = $response.GetResponseStream()
+        $outputStream = [System.IO.File]::Open($Destination, $mode, [System.IO.FileAccess]::Write)
+        try {
+            $inputStream.CopyTo($outputStream)
+        } catch {
+            return @{ Complete = $false; RangeRejected = $false; StartLength = $startLength }
+        } finally {
+            $outputStream.Close()
+            $inputStream.Close()
+        }
+    } finally {
+        if ($response) {
+            $response.Close()
+        }
+    }
+    if ($ExpectedBytes -gt 0 -and (Test-Path -LiteralPath $Destination)) {
+        $length = [int64](Get-Item -LiteralPath $Destination).Length
+        if ($startLength -gt 0 -and $length -gt $ExpectedBytes) {
+            Restore-FileLength -Path $Destination -Length $startLength
+            return @{ Complete = $false; RangeRejected = $true; StartLength = $startLength }
+        }
+    }
+    return @{ Complete = $true; RangeRejected = $false; StartLength = $startLength }
+}
+
+function Invoke-PinnedTransfer {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [switch]$Resume,
+        [int64]$ExpectedBytes = 0
+    )
+    $startLength = [int64]0
+    if ($Resume -and (Test-Path -LiteralPath $Destination)) {
+        $startLength = [int64](Get-Item -LiteralPath $Destination).Length
+    }
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if (-not $curl) {
+        return (Receive-PinnedHttpFile -Url $Url -Destination $Destination -Resume:$Resume -ExpectedBytes $ExpectedBytes)
+    }
+    $argumentList = @(
+        '--fail', '--location', '--retry', '3', '--retry-delay', '2',
+        '--silent', '--show-error', '--output', $Destination
+    )
+    if ($startLength -gt 0) {
+        $argumentList += @('--continue-at', '-')
+    }
+    $argumentList += $Url
+    $output = & curl.exe @argumentList 2>&1
+    $code = $LASTEXITCODE
+    $text = (@($output) | ForEach-Object { [string]$_ }) -join "`n"
+    $rangeRejected = $code -eq 33 -or $text -match '(?i)(byte ranges|416)'
+    if ($rangeRejected) {
+        if ($startLength -gt 0) {
+            Restore-FileLength -Path $Destination -Length $startLength
+        }
+        return @{ Complete = $false; RangeRejected = $true; StartLength = $startLength }
+    }
+    if ($code -ne 0) {
+        return @{ Complete = $false; RangeRejected = $false; StartLength = $startLength }
+    }
+    if ($ExpectedBytes -gt 0 -and (Test-Path -LiteralPath $Destination)) {
+        $length = [int64](Get-Item -LiteralPath $Destination).Length
+        if ($startLength -gt 0 -and $length -gt $ExpectedBytes) {
+            Restore-FileLength -Path $Destination -Length $startLength
+            return @{ Complete = $false; RangeRejected = $true; StartLength = $startLength }
+        }
+    }
+    return @{ Complete = $true; RangeRejected = $false; StartLength = $startLength }
+}
+
+function Save-ReplacementDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Partial,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Algorithm,
+        [Parameter(Mandatory = $true)][string]$Checksum,
+        [int64]$ExpectedBytes = 0,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $replacement = "$Destination.full"
+    if (Test-Path -LiteralPath $replacement) {
+        Remove-Item -LiteralPath $replacement -Force
+    }
+    $second = Invoke-PinnedTransfer -Url $Url -Destination $replacement -ExpectedBytes $ExpectedBytes
+    if (-not $second.Complete) {
+        if (Test-Path -LiteralPath $replacement) {
+            Remove-Item -LiteralPath $replacement -Force -ErrorAction SilentlyContinue
+        }
+        throw "The download of $Label stopped. The partial file was kept at $Partial."
+    }
+    if (-not (Test-PinnedFileHash -Path $replacement -Algorithm $Algorithm -Checksum $Checksum -ExpectedBytes $ExpectedBytes)) {
+        Remove-Item -LiteralPath $replacement -Force -ErrorAction SilentlyContinue
+        throw "The checksum of $Label does not match the pin. The partial file was kept at $Partial."
+    }
+    if (Test-Path -LiteralPath $Partial) {
+        Remove-Item -LiteralPath $Partial -Force
+    }
+    Move-Item -LiteralPath $replacement -Destination $Destination
+    Write-InstallLog "$Label size and $Algorithm checksum verified."
+    return $true
+}
+
 function Save-PinnedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
@@ -469,34 +630,43 @@ function Save-PinnedFile {
     }
     $partial = "$Destination.partial"
     if (Test-Path -LiteralPath $partial) {
-        Remove-Item -LiteralPath $partial -Force
+        if (Test-PinnedFileHash -Path $partial -Algorithm $Algorithm -Checksum $expected -ExpectedBytes $ExpectedBytes) {
+            Move-Item -LiteralPath $partial -Destination $Destination
+            Write-InstallLog "$Label size and $Algorithm checksum verified."
+            return $true
+        }
+        $partialLength = [int64](Get-Item -LiteralPath $partial).Length
+        if ($ExpectedBytes -gt 0 -and $partialLength -ge $ExpectedBytes) {
+            Write-InstallLog "$Label partial is $partialLength bytes and does not match the pin. It cannot be resumed." 'WARN'
+            Remove-Item -LiteralPath $partial -Force
+        }
     }
-    Write-InstallLog "Downloading $Label from $Url"
-    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if ($curl) {
-        & curl.exe --fail --location --retry 3 --retry-delay 2 --silent --show-error --output $partial $Url
-        if ($LASTEXITCODE -ne 0) {
-            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
-            throw "The download of $Label failed."
-        }
+    $resume = Test-Path -LiteralPath $partial
+    if ($resume) {
+        $resumeLength = [int64](Get-Item -LiteralPath $partial).Length
+        Write-InstallLog "Resuming $Label from $resumeLength bytes with an HTTP range request."
     } else {
-        $previous = $ProgressPreference
-        $ProgressPreference = 'SilentlyContinue'
-        try {
-            Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
-        } catch {
-            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
-            throw "The download of $Label failed."
-        } finally {
-            $ProgressPreference = $previous
-        }
+        Write-InstallLog "Downloading $Label from $Url"
+    }
+    $transfer = Invoke-PinnedTransfer -Url $Url -Destination $partial -Resume:$resume -ExpectedBytes $ExpectedBytes
+    if ($transfer.RangeRejected) {
+        Write-InstallLog "The server did not honor a ranged resume for $Label. The partial file was kept."
+        return (Save-ReplacementDownload -Url $Url -Partial $partial -Destination $Destination -Algorithm $Algorithm -Checksum $expected -ExpectedBytes $ExpectedBytes -Label $Label)
+    }
+    if (-not $transfer.Complete) {
+        throw "The download of $Label stopped. The partial file was kept at $partial."
     }
     if (-not (Test-PinnedFileHash -Path $partial -Algorithm $Algorithm -Checksum $expected -ExpectedBytes $ExpectedBytes)) {
+        if ($resume -and [int64]$transfer.StartLength -gt 0) {
+            Restore-FileLength -Path $partial -Length ([int64]$transfer.StartLength)
+            Write-InstallLog "The resumed $Label file did not match the pin. The partial file was kept and one full download will be tried."
+            return (Save-ReplacementDownload -Url $Url -Partial $partial -Destination $Destination -Algorithm $Algorithm -Checksum $expected -ExpectedBytes $ExpectedBytes -Label $Label)
+        }
         Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
         throw "The checksum of $Label does not match the pin."
     }
     Move-Item -LiteralPath $partial -Destination $Destination
-    Write-InstallLog "$Label checksum verified."
+    Write-InstallLog "$Label size and $Algorithm checksum verified."
     return $true
 }
 
@@ -544,27 +714,112 @@ function Expand-PinnedArchive {
         Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     }
-    $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
-    if ($null -eq $sevenZip) {
-        foreach ($candidate in @(
-                (Join-Path ${env:ProgramFiles} '7-Zip\7z.exe'),
-                (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
-            )) {
-            if (Test-Path -LiteralPath $candidate) {
-                $sevenZip = Get-Item -LiteralPath $candidate
-                break
-            }
+    $sevenZipPath = Find-SevenZipExecutable
+    if (-not $sevenZipPath) {
+        $pin = (Get-InstallerPins).seven_zip
+        $sevenZipPath = Join-Path (Split-Path -Parent $Archive) '7zr.exe'
+        Write-InstallLog 'tar.exe and an installed 7z.exe are unavailable. Downloading the pinned 7zr.exe extractor.'
+        $saved = Save-PinnedFile -Url ([string]$pin.url) -Destination $sevenZipPath -Algorithm ([string]$pin.algorithm) -Checksum ([string]$pin.checksum) -ExpectedBytes ([int64]$pin.expected_bytes) -Label '7zr.exe'
+        if (-not $saved) {
+            throw 'The pinned 7zr.exe extractor was not downloaded. The ComfyUI archive was not extracted.'
         }
     }
-    if ($null -eq $sevenZip) {
-        throw 'The portable archive is 7z. Install 7-Zip from https://www.7-zip.org/ and rerun the installer. The archive was not extracted.'
-    }
-    $sevenZipPath = if ($sevenZip.Source) { $sevenZip.Source } else { $sevenZip.FullName }
     & $sevenZipPath x "-o$Destination" -y $Archive
     if ($LASTEXITCODE -ne 0) {
-        throw '7-Zip could not extract the ComfyUI archive.'
+        throw 'The 7z extractor could not extract the ComfyUI archive.'
     }
     return $true
+}
+
+function Find-SevenZipExecutable {
+    $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return [string]$command.Source
+    }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:ProgramFiles) {
+        $candidates.Add((Join-Path $env:ProgramFiles '7-Zip\7z.exe'))
+    }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($programFilesX86) {
+        $candidates.Add((Join-Path $programFilesX86 '7-Zip\7z.exe'))
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Test-RawComfyApiExport {
+    param($Payload)
+    if ($null -eq $Payload) {
+        return $false
+    }
+    if ($Payload -is [System.Array]) {
+        return $false
+    }
+    $names = @($Payload.PSObject.Properties.Name)
+    if ($names -contains 'id' -or $names -contains 'workflow' -or $names -contains 'bindings') {
+        return $false
+    }
+    foreach ($property in @($Payload.PSObject.Properties)) {
+        $value = $property.Value
+        if ($null -eq $value) {
+            continue
+        }
+        $valueNames = @($value.PSObject.Properties.Name)
+        if ($valueNames -contains 'class_type') {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-WorkflowCheckerCode {
+    $lines = @(
+        'import sys'
+        'from pathlib import Path'
+        'from local_ai_switchboard.providers.workflows import load_manifest'
+        ''
+        'manifest = load_manifest(Path(sys.argv[1]))'
+        'sys.stdout.write("LAS_WORKFLOW_ID=" + manifest.id + "\n")'
+        'sys.stdout.write("LAS_WORKFLOW_STATE=" + ("enabled" if manifest.enabled else "disabled") + "\n")'
+        'sys.stdout.write("LAS_WORKFLOW_GRAPH=" + ("yes" if manifest.workflow else "no") + "\n")'
+    )
+    return ($lines -join "`n")
+}
+
+function Get-WorkflowManifestState {
+    param(
+        [Parameter(Mandatory = $true)][string]$Python,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+    $output = & $Python -c (Get-WorkflowCheckerCode) $ManifestPath 2>&1
+    $id = ''
+    $state = ''
+    $graph = ''
+    foreach ($line in @($output)) {
+        $text = [string]$line
+        if ($text -like 'LAS_WORKFLOW_ID=*') {
+            $id = $text.Substring('LAS_WORKFLOW_ID='.Length)
+        }
+        if ($text -like 'LAS_WORKFLOW_STATE=*') {
+            $state = $text.Substring('LAS_WORKFLOW_STATE='.Length)
+        }
+        if ($text -like 'LAS_WORKFLOW_GRAPH=*') {
+            $graph = $text.Substring('LAS_WORKFLOW_GRAPH='.Length)
+        }
+    }
+    $detail = ((@($output) | ForEach-Object { [string]$_ }) -join ' ').Trim()
+    return @{
+        Ok     = ($LASTEXITCODE -eq 0 -and $id -ne '')
+        Id     = $id
+        State  = $state
+        Graph  = $graph
+        Detail = $detail
+    }
 }
 
 function Find-ComfyPortableRoot {

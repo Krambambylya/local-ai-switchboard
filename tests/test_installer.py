@@ -154,6 +154,18 @@ def test_pins_name_exact_vendor_assets() -> None:
     assert models["flux-2-klein-4b-fp8.safetensors"]["checksum"] == PINS["fp8_sha256"]
     assert models["qwen_3_4b.safetensors"]["checksum"] == PINS["text_sha256"]
     assert models["flux2-vae.safetensors"]["checksum"] == PINS["vae_sha256"]
+    seven_zip = pins["seven_zip"]
+    assert seven_zip["version"] == "26.05"
+    assert (
+        seven_zip["url"]
+        == "https://github.com/ip7z/7zip/releases/download/26.05/7zr.exe"
+    )
+    assert (
+        seven_zip["checksum"]
+        == "9bf582b894dfa665f852d7e9112b02290a1c303c2d95a21fcdc41ffcb03143b7"
+    )
+    assert seven_zip["expected_bytes"] == 602624
+    assert seven_zip["algorithm"] == "SHA256"
     assert models["flux-2-klein-4b-fp8.safetensors"]["url"].startswith(
         "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/"
     )
@@ -233,3 +245,153 @@ def test_security_and_lifecycle_contracts() -> None:
     assert workflow["enabled"] is False
     assert workflow["workflow"] is None
     assert "class_type" not in json.dumps(workflow)
+
+
+def _between(text: str, start: str, end: str) -> str:
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_root_alias_and_workflow_file_parameter() -> None:
+    install = _read("install.ps1")
+    assert install.index("[Alias('Root')]") < install.index("[string]$InstallRoot")
+    assert "[string]$WorkflowFile" in install
+    assert "SupportsShouldProcess" in install
+    assert "load_manifest" in install
+    assert "raw ComfyUI API export" in install
+    assert "does not invent node ids" in install
+
+
+def test_clean_install_does_not_require_python_git_ollama_comfy_or_winget() -> None:
+    install = _read("install.ps1")
+    preflight = _between(install, "function Get-MachinePreflight", "function Install-PythonRuntime")
+    assert "facts.python = 'missing'" in preflight
+    assert "facts.ollama = 'missing'" in preflight
+    assert "facts.git = 'missing'" in preflight
+    assert "Git is optional and is not required before installation." in preflight
+    assert "warnings.Add('Git" not in preflight
+    for line in preflight.splitlines():
+        if "errors.Add" not in line:
+            continue
+        lowered = line.lower()
+        assert "python" not in lowered
+        assert "ollama" not in lowered
+        assert "git" not in lowered
+        assert "winget" not in lowered
+        assert "comfy" not in lowered
+    assert "winget" not in _all_text().lower()
+    runtime = _between(install, "function Install-PythonRuntime", "function Install-OllamaRuntime")
+    assert "python-3.12.10-amd64.exe" in runtime
+    assert "Kept the existing Python runtime." in runtime
+
+
+def test_existing_ollama_and_comfyui_are_kept() -> None:
+    install = _read("install.ps1")
+    ollama = _between(install, "function Install-OllamaRuntime", "function Install-ComfyPortable")
+    comfy = _between(install, "function Install-ComfyPortable", "function Install-OllamaModel")
+    assert "Kept the existing Ollama installation." in ollama
+    assert "Keeping Ollama" in ollama
+    assert "Kept the existing ComfyUI portable tree." in comfy
+    assert "Find-ComfyPortableRoot" in comfy
+
+
+def test_interrupted_download_keeps_partial_and_uses_http_range() -> None:
+    common = _read("Common.ps1")
+    assert "--continue-at" in common
+    assert "Resuming" in common
+    assert "The partial file was kept" in common
+    assert "RangeRejected" in common
+    assert "byte ranges" in common
+    assert "416" in common
+    wiped = (
+        "if (Test-Path -LiteralPath $partial) {\n"
+        "        Remove-Item -LiteralPath $partial -Force\n"
+        "    }"
+    )
+    assert wiped not in common
+    assert "is already present and the checksum matches." in common
+    assert "It was left in place." in common
+
+
+def test_rerun_keeps_verified_files_token_and_env() -> None:
+    install = _read("install.ps1")
+    common = _read("Common.ps1")
+    assert "Save-StateManifest" in install
+    assert "Kept the existing token file" in install
+    assert "Kept the existing .env file." in install
+    assert "is already present and the checksum matches." in common
+    assert "Leaving it in place. Use update.ps1 to change it." in install
+
+
+def test_existing_user_configuration_is_not_replaced() -> None:
+    install = _read("install.ps1")
+    assert "ForceConfig" in install
+    assert "The existing .env does not keep Ollama and ComfyUI on loopback" in install
+    assert "An existing Modelfile differs" in install
+    assert "Existing workflow" in install
+    assert "Pass -ForceConfig to replace it." in install
+    assert "differs and was left unchanged" in install
+
+
+def test_firewall_rule_stays_private_and_local_subnet() -> None:
+    common = _read("Common.ps1")
+    install = _read("install.ps1")
+    assert "New-NetFirewallRule" in common
+    assert "-Profile Private" in common
+    assert "-RemoteAddress LocalSubnet" in common
+    assert "needs-admin" in common
+    assert "FirewallOnly" in install
+    assert common.count("New-NetFirewallRule") == 1
+
+
+def test_missing_nvidia_driver_stops_design_profile() -> None:
+    install = _read("install.ps1")
+    preflight = _between(install, "function Get-MachinePreflight", "function Install-PythonRuntime")
+    assert "nvidia-smi did not report a GPU. The Design profile stops" in preflight
+    assert "us.download.nvidia.com" not in _all_text().lower()
+
+
+def test_insufficient_disk_space_stops_before_downloads() -> None:
+    install = _read("install.ps1")
+    pins = json.loads((INSTALLER / "pins.json").read_text(encoding="utf-8"))
+    preflight = _between(install, "function Get-MachinePreflight", "function Install-PythonRuntime")
+    assert "design_free_bytes" in preflight
+    assert "Get-FreeBytesForPath" in preflight
+    assert "$free -lt $required" in preflight
+    assert pins["disk"]["design_free_bytes"] == 53687091200
+    assert pins["disk"]["basic_free_bytes"] == 21474836480
+
+
+def test_seven_zip_fallback_is_pinned_and_last() -> None:
+    common = _read("Common.ps1")
+    expand = _between(common, "function Expand-PinnedArchive", "function Find-SevenZipExecutable")
+    assert expand.index("tar.exe") < expand.index("Find-SevenZipExecutable")
+    assert "seven_zip" in expand
+    assert "7zr.exe" in expand
+    assert "Install 7-Zip from https://www.7-zip.org/" not in common
+
+
+def test_ollama_model_consent_is_not_bypassed() -> None:
+    install = _read("install.ps1")
+    model = _between(install, "function Install-OllamaModel", "function Install-ComfyModels")
+    assert "AcceptUnchecksummedModels" in model
+    assert "if (-not $allowed)" in model
+    assert "Consent was not recorded for the unchecksummed Ollama model" in model
+
+
+def test_readiness_keeps_a_missing_workflow_out_of_gateway_health() -> None:
+    doctor = _read("doctor.ps1")
+    install = _read("install.ps1")
+    for label in (
+        "Gateway operational:",
+        "Ollama operational:",
+        "ComfyUI operational:",
+        "Image workflow:",
+        "Image generation: not ready",
+    ):
+        assert label in doctor
+    image_status = _between(doctor, "function Update-ImageWorkflowStatus", "$manifestPath")
+    assert "$script:failed" not in image_status
+    assert "A missing image workflow does not change gateway readiness." in doctor
+    assert "registered, not tested" in doctor
+    assert "Invoke-InstallDoctor" in install
+    assert "image_generation_tested" in install

@@ -31,6 +31,14 @@
     "port": 8188,
     "notes": "Official Windows portable NVIDIA archive from the v0.41.0 release. The SHA-256 is the GitHub release asset digest. The embedded interpreter stays inside this tree."
   },
+  "seven_zip": {
+    "version": "26.05",
+    "url": "https://github.com/ip7z/7zip/releases/download/26.05/7zr.exe",
+    "algorithm": "SHA256",
+    "checksum": "9bf582b894dfa665f852d7e9112b02290a1c303c2d95a21fcdc41ffcb03143b7",
+    "expected_bytes": 602624,
+    "notes": "Official standalone 7zr.exe from the ip7z/7zip 26.05 GitHub release. The SHA-256 is that release asset digest. Downloaded only when tar.exe cannot extract the ComfyUI archive and 7z.exe is not already installed."
+  },
   "comfy_models": [
     {
       "filename": "flux-2-klein-4b-fp8.safetensors",

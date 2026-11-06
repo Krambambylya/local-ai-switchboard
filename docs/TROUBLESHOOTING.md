@@ -60,4 +60,4 @@ The installer log is `logs\installer-*.log` under the install root. It records p
 
 A checksum mismatch deletes the partial download and does not run the installer. An existing ComfyUI tree, token, or `.env` is kept. `update.ps1` refuses a source version older than the installed package unless `-AllowDowngrade` is set.
 
-If Windows `tar` cannot unpack the ComfyUI `.7z`, install 7-Zip from `https://www.7-zip.org/` and run the installer again. The installer does not download 7-Zip itself.
+If Windows `tar` cannot unpack the ComfyUI `.7z` and `7z.exe` is not already installed, the installer downloads the pinned `7zr.exe` from the official 7-Zip GitHub release, checks its SHA-256, and extracts the archive with that program. An interrupted model download leaves a `.partial` file. Run the installer again and it resumes with an HTTP range request. The file is installed only after the pinned size and checksum match.

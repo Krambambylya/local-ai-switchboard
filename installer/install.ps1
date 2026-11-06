@@ -5,16 +5,20 @@
 
 .DESCRIPTION
     Configures a per-user gateway, Ollama, and, for the Design profile, ComfyUI
-    Portable NVIDIA. Downloaded installers are checked against pins.json and
-    started from an argument list. This script does not execute a downloaded
+    Portable NVIDIA. -Root is an alias of -InstallRoot. -WorkflowFile accepts a
+    gateway workflow manifest. It is validated with load_manifest and is not a
+    raw ComfyUI API export. Downloaded installers are checked against pins.json
+    and started from an argument list. This script does not execute a downloaded
     script. A rerun keeps an existing token, .env, portable tree, and models.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [ValidateSet('Basic', 'Design')]
     [string]$Profile = 'Design',
+    [Alias('Root')]
     [string]$InstallRoot,
     [string]$SourceRoot,
+    [string]$WorkflowFile,
     [int]$ApiPort = 8787,
     [switch]$Silent,
     [switch]$SkipFirewall,
@@ -210,8 +214,8 @@ function Get-MachinePreflight {
     }
     $git = Get-Command git.exe -ErrorAction SilentlyContinue
     if ($null -eq $git) {
-        $warnings.Add('Git was not found. The official installer is https://git-scm.com/download/win. Git is optional for a local source install.')
         $facts.git = 'missing'
+        Write-InstallLog 'Git was not found. Git is optional and is not required before installation.'
     } else {
         $gitText = @(& $git.Source --version) -join ' '
         $facts.git = $gitText.Trim()
@@ -498,16 +502,57 @@ function Install-ComfyModels {
 }
 
 function Install-WorkflowSlot {
+    $script:PendingWorkflowPath = $null
     if ($Profile -ne 'Design') {
-        return New-StageResult -Verified $true -Detail 'The Basic profile does not install the image workflow slot.' -Facts @{ action = 'profile-skip' }
+        return New-StageResult -Verified $true -Detail 'The Basic profile does not install the image workflow slot.' -Facts @{
+            action                  = 'profile-skip'
+            image_workflow          = 'not in the Basic profile'
+            image_generation        = $false
+            image_generation_tested = $false
+        }
     }
     $source = Join-Path $SourceRoot 'src\local_ai_switchboard\workflows\flux2-klein-4b.json'
-    if (-not (Test-Path -LiteralPath $source)) {
+    $supplied = -not [string]::IsNullOrWhiteSpace($WorkflowFile)
+    $candidate = $source
+    if ($supplied) {
+        if (-not (Test-Path -LiteralPath $WorkflowFile)) {
+            return New-StageResult -Verified $false -Detail "WorkflowFile was not found at $WorkflowFile." -Facts @{
+                image_generation        = $false
+                image_generation_tested = $false
+            }
+        }
+        $candidate = (Resolve-Path -LiteralPath $WorkflowFile).Path
+    } elseif (-not (Test-Path -LiteralPath $source)) {
         return New-StageResult -Verified $false -Detail 'The disabled flux2-klein-4b workflow file is missing from the source tree.' -Facts @{}
     }
-    $payload = Get-Content -LiteralPath $source -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($payload.enabled -ne $false -or $null -ne $payload.workflow) {
-        return New-StageResult -Verified $false -Detail 'The packaged workflow file is not the disabled empty slot.' -Facts @{}
+    try {
+        $payload = Get-Content -LiteralPath $candidate -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        return New-StageResult -Verified $false -Detail 'The workflow file is not valid JSON. A gateway manifest is required.' -Facts @{
+            image_generation = $false
+        }
+    }
+    if (Test-RawComfyApiExport -Payload $payload) {
+        return New-StageResult -Verified $false -Detail 'WorkflowFile is a raw ComfyUI API export. Pass a gateway manifest with id, title, enabled, workflow, bindings, required, and defaults. The installer does not invent node ids or wrap a raw export.' -Facts @{
+            image_generation        = $false
+            image_generation_tested = $false
+        }
+    }
+    $packagedReal = (-not $supplied) -and ($payload.enabled -ne $false -or $null -ne $payload.workflow)
+    if ($supplied -or $packagedReal) {
+        $script:PendingWorkflowPath = $candidate
+        if ($DryRun) {
+            Write-InstallLog "Would validate $candidate with load_manifest and copy it only when validation succeeds."
+            return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run'; image_generation = $false }
+        }
+        Write-InstallLog "Workflow manifest $candidate will be validated after the gateway environment exists. Image generation is not ready."
+        return New-StageResult -Verified $true -Detail 'The workflow manifest is waiting for validation in the gateway environment. Image generation is not ready.' -Facts @{
+            action                  = 'pending-validation'
+            path                    = $candidate
+            image_workflow          = 'unavailable'
+            image_generation        = $false
+            image_generation_tested = $false
+        }
     }
     $destinationDir = Join-Path $InstallRoot 'workflows'
     $destination = Join-Path $destinationDir 'flux2-klein-4b.json'
@@ -519,8 +564,11 @@ function Install-WorkflowSlot {
     if (Test-Path -LiteralPath $destination) {
         Write-InstallLog 'The existing workflow file was kept.'
         return New-StageResult -Verified $true -Detail 'Kept the existing workflow file. Image generation stays disabled until that file contains a real API export.' -Facts @{
-            action = 'kept'
-            path   = $destination
+            action                  = 'kept'
+            path                    = $destination
+            image_workflow          = 'unavailable'
+            image_generation        = $false
+            image_generation_tested = $false
         }
     }
     Copy-Item -LiteralPath $source -Destination $destination
@@ -529,10 +577,110 @@ function Install-WorkflowSlot {
         return New-StageResult -Verified $false -Detail 'The copied workflow slot failed its disabled check.' -Facts @{}
     }
     return New-StageResult -Verified $true -Detail 'Installed the disabled flux2-klein-4b slot. A real ComfyUI API-format workflow export is required before image generation can run.' -Facts @{
-        action           = 'installed'
-        path             = $destination
-        image_generation = $false
+        action                  = 'installed'
+        path                    = $destination
+        image_workflow          = 'unavailable'
+        image_generation        = $false
+        image_generation_tested = $false
     }
+}
+
+function Register-VerifiedWorkflow {
+    if (-not $script:PendingWorkflowPath) {
+        return $script:WorkflowStageResult
+    }
+    if ($DryRun) {
+        return (New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run'; image_generation = $false })
+    }
+    $venvPython = Join-Path $InstallRoot 'venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        return (New-StageResult -Verified $false -Detail 'Workflow validation needs the gateway virtual environment.' -Facts @{
+                image_generation        = $false
+                image_generation_tested = $false
+            })
+    }
+    $validated = Get-WorkflowManifestState -Python $venvPython -ManifestPath $script:PendingWorkflowPath
+    if (-not $validated.Ok) {
+        return (New-StageResult -Verified $false -Detail "validate_manifest rejected the workflow file. $($validated.Detail)" -Facts @{
+                image_generation        = $false
+                image_generation_tested = $false
+            })
+    }
+    $destinationDir = Join-Path $InstallRoot 'workflows'
+    New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
+    $destination = Join-Path $destinationDir ($validated.Id + '.json')
+    if (Test-Path -LiteralPath $destination) {
+        $currentHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+        $incomingHash = (Get-FileHash -LiteralPath $script:PendingWorkflowPath -Algorithm SHA256).Hash
+        if ($currentHash -ne $incomingHash -and -not $ForceConfig) {
+            Write-InstallLog "Existing workflow $destination differs and was left unchanged. Pass -ForceConfig to replace it."
+            $existing = Get-WorkflowManifestState -Python $venvPython -ManifestPath $destination
+            $registered = $existing.Ok -and $existing.State -eq 'enabled' -and $existing.Graph -eq 'yes'
+            $availability = if ($registered) { 'registered, not tested' } else { 'unavailable' }
+            return (New-StageResult -Verified $true -Detail "Kept the existing workflow file. Image workflow is $availability. Image generation is not ready." -Facts @{
+                    action                  = 'kept'
+                    path                    = $destination
+                    image_workflow          = $availability
+                    image_generation        = $false
+                    image_generation_tested = $false
+                })
+        }
+        if ($currentHash -eq $incomingHash) {
+            $registered = $validated.State -eq 'enabled' -and $validated.Graph -eq 'yes'
+            $availability = if ($registered) { 'registered, not tested' } else { 'unavailable' }
+            return (New-StageResult -Verified $true -Detail "Workflow $($validated.Id) already matches the validated manifest. Image workflow is $availability. Image generation is not ready." -Facts @{
+                    action                  = 'kept'
+                    path                    = $destination
+                    image_workflow          = $availability
+                    image_generation        = $false
+                    image_generation_tested = $false
+                })
+        }
+    }
+    Copy-Item -LiteralPath $script:PendingWorkflowPath -Destination $destination -Force
+    $copied = Get-WorkflowManifestState -Python $venvPython -ManifestPath $destination
+    if (-not $copied.Ok) {
+        return (New-StageResult -Verified $false -Detail 'The copied workflow file failed validate_manifest.' -Facts @{
+                image_generation        = $false
+                image_generation_tested = $false
+            })
+    }
+    $registered = $copied.State -eq 'enabled' -and $copied.Graph -eq 'yes'
+    $availability = if ($registered) { 'registered, not tested' } else { 'unavailable' }
+    return (New-StageResult -Verified $true -Detail "Workflow $($copied.Id) was accepted by validate_manifest. Image workflow is $availability. Image generation is not ready until it is tested on this machine." -Facts @{
+            action                  = 'registered'
+            path                    = $destination
+            image_workflow          = $availability
+            image_generation        = $false
+            image_generation_tested = $false
+        })
+}
+
+function Invoke-InstallDoctor {
+    if ($DryRun) {
+        Write-InstallLog 'Would run doctor.ps1 and record gateway, Ollama, ComfyUI, and image workflow status separately.'
+        return (New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' })
+    }
+    $doctor = Join-Path $InstallRoot 'service\doctor.ps1'
+    if (-not (Test-Path -LiteralPath $doctor)) {
+        $doctor = Join-Path $PSScriptRoot 'doctor.ps1'
+    }
+    if ($AllowOlderWindows) {
+        & $doctor -InstallRoot $InstallRoot -AllowOlderWindows
+    } else {
+        & $doctor -InstallRoot $InstallRoot
+    }
+    if ($LASTEXITCODE -ne 0) {
+        return (New-StageResult -Verified $false -Detail 'doctor.ps1 reported an operational failure. A missing image workflow does not change gateway readiness.' -Facts @{
+                image_generation        = $false
+                image_generation_tested = $false
+            })
+    }
+    return (New-StageResult -Verified $true -Detail 'doctor.ps1 completed. Image generation stays not ready until a validated workflow is registered and tested.' -Facts @{
+            action                  = 'diagnosed'
+            image_generation        = $false
+            image_generation_tested = $false
+        })
 }
 
 function Install-GatewaySoftware {
@@ -863,13 +1011,21 @@ $weightsResult = Install-ComfyModels
 Add-ComponentResult -Components $components -Name 'comfy_models' -Result $weightsResult
 Stop-ForStage -Components $components -Result $weightsResult | Out-Null
 
+$script:PendingWorkflowPath = $null
+$script:WorkflowStageResult = $null
 $workflowResult = Install-WorkflowSlot
+$script:WorkflowStageResult = $workflowResult
 Add-ComponentResult -Components $components -Name 'workflow' -Result $workflowResult
 Stop-ForStage -Components $components -Result $workflowResult | Out-Null
 
 $gatewayResult = Install-GatewaySoftware
 Add-ComponentResult -Components $components -Name 'gateway' -Result $gatewayResult
 Stop-ForStage -Components $components -Result $gatewayResult | Out-Null
+
+$workflowResult = Register-VerifiedWorkflow
+$script:WorkflowStageResult = $workflowResult
+Add-ComponentResult -Components $components -Name 'workflow' -Result $workflowResult
+Stop-ForStage -Components $components -Result $workflowResult | Out-Null
 
 if ($SkipFirewall) {
     $firewallResult = New-StageResult -Verified $false -Detail 'The firewall rule was not configured because -SkipFirewall was set.' -Facts @{}
@@ -905,6 +1061,10 @@ $verification = Invoke-StackVerification -GatewayFacts $gatewayResult.Facts
 Add-ComponentResult -Components $components -Name 'verification' -Result $verification
 Stop-ForStage -Components $components -Result $verification | Out-Null
 
+$doctorResult = Invoke-InstallDoctor
+Add-ComponentResult -Components $components -Name 'doctor' -Result $doctorResult
+Stop-ForStage -Components $components -Result $doctorResult | Out-Null
+
 Write-InstallLog 'Installation checks finished.'
 if (-not $DryRun) {
     $addresses = @(Get-LanIPv4Addresses)
@@ -918,7 +1078,7 @@ if (-not $DryRun) {
     Write-InstallLog "Copy the API token from $(Join-Path $InstallRoot 'secrets\mac-client.json'). That file is limited to the current user."
     Write-InstallLog 'On the Mac, save it in ~/.config/local-ai-switchboard/client.json and restrict the file to the owner.'
     if ($Profile -eq 'Design') {
-        Write-InstallLog 'The flux2-klein-4b slot is installed disabled. Image generation needs a real ComfyUI API-format workflow export.'
+        Write-InstallLog 'Image generation: not ready. A missing or untested workflow does not change gateway, Ollama, or ComfyUI readiness.'
     }
 }
 if (-not $Silent -and -not $DryRun) {

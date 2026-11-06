@@ -1,0 +1,81 @@
+name: Windows installer
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            Write-Error "Windows PowerShell 5.1 is required. Found $($PSVersionTable.PSVersion)"
+          }
+          $installer = Resolve-Path 'installer'
+          $scriptFiles = @(Get-ChildItem -LiteralPath $installer -Filter '*.ps1')
+          if ($scriptFiles.Count -lt 7) {
+            Write-Error 'Expected the installer PowerShell scripts.'
+          }
+          foreach ($file in $scriptFiles) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error ($file.Name + ': ' + $_.ToString()) }
+              exit 1
+            }
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -match '(?i)winget') {
+              Write-Error "$($file.Name) references winget. The bootstrapper must not require it."
+            }
+          }
+          $installPath = (Resolve-Path 'installer\install.ps1').Path
+          $tokens = $null
+          $parseErrors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$parseErrors)
+          $names = @{}
+          foreach ($parameter in $ast.ParamBlock.Parameters) {
+            $names[$parameter.Name.VariablePath.UserPath] = $parameter
+          }
+          foreach ($required in @('Profile', 'InstallRoot', 'SourceRoot', 'WorkflowFile', 'ApiPort', 'AcceptUnchecksummedModels', 'Silent', 'ForceConfig')) {
+            if (-not $names.ContainsKey($required)) {
+              Write-Error "install.ps1 is missing -$required"
+            }
+          }
+          $aliasFound = $false
+          foreach ($attribute in $names['InstallRoot'].Attributes) {
+            if ($attribute.TypeName.Name -ne 'Alias') {
+              continue
+            }
+            foreach ($argument in $attribute.PositionalArguments) {
+              if ([string]$argument.Value -eq 'Root') {
+                $aliasFound = $true
+              }
+            }
+          }
+          if (-not $aliasFound) {
+            Write-Error 'InstallRoot is missing the Root alias.'
+          }
+          $binding = $false
+          foreach ($attribute in $ast.ParamBlock.Attributes) {
+            if ($attribute.TypeName.Name -eq 'CmdletBinding') {
+              $binding = $true
+            }
+          }
+          if (-not $binding) {
+            Write-Error 'install.ps1 is missing CmdletBinding.'
+          }
+          Write-Output 'Parsed installer scripts. -Root aliases -InstallRoot. No installer script references winget.'
+
+      - name: Run installer tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          py -3 -m pip install --disable-pip-version-check pytest
+          py -3 -m pytest tests/test_installer.py -q

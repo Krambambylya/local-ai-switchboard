@@ -14,7 +14,7 @@ Command, macOS Terminal, repository root:
 .venv/bin/pytest -o addopts=
 ```
 
-Result recorded with this documentation: **103 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and were not executed.
+Result recorded with this documentation: **115 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and were not executed. The new installer scenario checks are static. They do not download models or install software, and they were not run on Windows.
 
 The suite uses Python 3.13 in `.venv` for development. The project requires Python 3.12 or newer. The Windows installer pins the last Python 3.12 build that still has an official Windows installer, which is 3.12.10, and only when the PC does not already have 3.12 or newer.
 
