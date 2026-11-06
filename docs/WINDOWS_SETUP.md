@@ -1,0 +1,46 @@
+# Windows setup
+
+This page is the hardware checklist for the Windows 11 PC. None of these steps have been run. Do not treat a box as done because the installer or the gateway code exists.
+
+Run the checks in Windows PowerShell on the PC after `.\install.ps1 -Profile Design`, and run the Mac checks in macOS Terminal. The expected GPU is an RTX 4060 8 GB.
+
+## Checklist
+
+- [ ] `nvidia-smi` prints the GPU name, a driver version, and about 8188 MiB of memory. The installer does not install a driver.
+- [ ] `netstat -ano` or `Get-NetTCPConnection` shows Ollama listening on `127.0.0.1:11434` only.
+- [ ] The same check shows ComfyUI, when it is running, on `127.0.0.1:8188` only. A stopped ComfyUI is expected between image jobs.
+- [ ] The gateway listens on port `8787`. From the Mac, `http://<windows-lan-ip>:8787/health/live` returns `{"status":"live"}`.
+- [ ] From the Mac, `http://<windows-lan-ip>:11434` and `http://<windows-lan-ip>:8188` do not connect.
+- [ ] The firewall rule `LocalAISwitchboard-8787` is inbound TCP, Private profile, remote address `LocalSubnet`. No router port forward was added.
+- [ ] Task Scheduler shows `Local AI Switchboard` as a per-user task at logon. Its action runs `installer` service `start.ps1` for the gateway. After a reboot and sign-in, `/health/live` answers without a manual start.
+- [ ] One streaming chat completes through the gateway. A second chat starts without an Ollama unload between them.
+- [ ] One 768×768 Klein image completes only after Ollama has unloaded and `nvidia-smi` shows enough free memory.
+- [ ] A chat after that image waits until ComfyUI has released memory.
+- [ ] Disconnecting a streaming client releases the GPU lease and the next request runs.
+- [ ] A forced ComfyUI `/free` that does not actually free memory leaves the scheduler in error and does not start Ollama.
+- [ ] Restarting the gateway during an image job marks that job `interrupted` and does not submit it again.
+- [ ] `secrets\token.txt` and the gateway log do not show the same secret. The log names the token path only.
+- [ ] `doctor.ps1` exits 0 after the install. This has not been observed yet.
+
+## Commands to use during the checklist
+
+Windows PowerShell:
+
+```powershell
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+Get-NetTCPConnection -LocalPort 11434,8188,8787 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
+Get-NetFirewallRule -Name LocalAISwitchboard-8787 | Get-NetFirewallAddressFilter
+Get-ScheduledTask -TaskName "Local AI Switchboard"
+.\doctor.ps1
+```
+
+macOS Terminal, after the token file is in place:
+
+```bash
+curl -sS "http://<windows-lan-ip>:8787/health/live"
+curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 "http://<windows-lan-ip>:11434/api/version"
+```
+
+The second command should fail to connect. A successful HTTP response from the Mac means Ollama is reachable beyond localhost, which the design does not allow.
+
+Image generation on this checklist also requires a real ComfyUI API-format workflow. The shipped `flux2-klein-4b` entry is disabled, so the Klein image item cannot pass until that export is registered. See [WORKFLOWS.md](WORKFLOWS.md).

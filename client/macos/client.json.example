@@ -1,0 +1,4 @@
+{
+  "gateway_url": "http://192.168.1.50:8787",
+  "token": "replace-with-the-token-from-the-windows-token-file"
+}

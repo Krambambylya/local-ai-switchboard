@@ -1,0 +1,10 @@
+{
+  "id": "flux2-klein-4b",
+  "title": "FLUX.2 Klein 4B",
+  "enabled": false,
+  "disabled_reason": "A real ComfyUI API-format workflow export is required before image generation can be enabled. The official Klein template is a UI subgraph, not a /prompt graph. This entry contains no node ids.",
+  "workflow": null,
+  "bindings": {},
+  "required": ["prompt"],
+  "defaults": {}
+}
