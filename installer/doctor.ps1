@@ -133,7 +133,7 @@ if ((-not $buildOk) -and $AllowOlderWindows) {
 $gpu = Get-NvidiaReport
 Add-DoctorCheck -Name 'nvidia-smi' -Ok $gpu.Available -Detail $gpu.Detail -Group report
 
-$python = Find-Python312
+$python = Find-Python312 -InstallRoot $InstallRoot
 $pythonOk = $null -ne $python -and $python.Executable -notlike '*python_embeded*'
 $pythonDetail = 'Python 3.12 or newer was not found.'
 if ($pythonOk) {

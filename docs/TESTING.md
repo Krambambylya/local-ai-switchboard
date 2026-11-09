@@ -14,9 +14,11 @@ Command, macOS Terminal, repository root:
 .venv/bin/pytest -o addopts=
 ```
 
-Result recorded with this documentation: **122 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and were not executed. The installer scenario checks are static. They do not download models or install software, and they were not run on Windows.
+Result recorded with this documentation: **123 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and `tests/installer_python_runtime.ps1` was not executed here. The Python runtime cases mock discovery and installation. They do not download Python or install software, and they were not run on the Windows 11 PC.
 
 The suite uses Python 3.13 in `.venv` for development. The project requires Python 3.12 or newer. The Windows installer pins the last Python 3.12 build that still has an official Windows installer, which is 3.12.10, and only when the PC does not already have 3.12 or newer.
+
+`tests/installer_python_runtime.ps1` exercises Python discovery and the pinned installer with fake executables and stand-in commands. It does not download Python or run the Windows installer. The Windows workflow parses that script and the installer scripts with Windows PowerShell 5.1, then runs the script on the GitHub Windows runner. That is not a completed installation on the Windows 11 hardware target.
 
 ## Verified by automated tests
 

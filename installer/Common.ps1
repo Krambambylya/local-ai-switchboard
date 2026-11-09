@@ -5,6 +5,8 @@ Set-StrictMode -Version 2.0
 
 $script:InstallerDirectory = $PSScriptRoot
 $script:LogPath = $null
+$script:ResolvedPythonRuntime = $null
+$script:PythonDiscoveryLog = $null
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -266,50 +268,1110 @@ function Get-ProcessCommandLine {
     return [string]$process.CommandLine
 }
 
-function Find-Python312 {
-    $launchers = @()
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($py) {
-        $launchers += @{ Executable = $py.Source; Prefix = @('-3.12') }
+function Get-ObjectProperty {
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Object) {
+        return $null
     }
-    foreach ($name in @('python.exe', 'python3.exe', 'python', 'python3')) {
-        $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            $launchers += @{ Executable = $command.Source; Prefix = @() }
+    if ($Object -is [hashtable]) {
+        if ($Object.ContainsKey($Name)) {
+            return $Object[$Name]
         }
+        return $null
     }
-    $local = Join-Path $env:LOCALAPPDATA 'Programs\Python'
-    if (Test-Path -LiteralPath $local) {
-        foreach ($directory in @(Get-ChildItem -LiteralPath $local -Directory -Filter 'Python3*')) {
-            $candidate = Join-Path $directory.FullName 'python.exe'
-            if (Test-Path -LiteralPath $candidate) {
-                $launchers += @{ Executable = $candidate; Prefix = @() }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-PythonPin {
+    param($Pins)
+    $pin = Get-ObjectProperty -Object $Pins -Name 'python'
+    if ($null -eq $pin) {
+        throw 'pins.json is missing the python entry.'
+    }
+    return $pin
+}
+
+function Write-PythonDiscovery {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ValidateSet('INFO', 'WARN', 'ERROR')][string]$Level = 'INFO'
+    )
+    if ($null -eq $script:PythonDiscoveryLog) {
+        $script:PythonDiscoveryLog = New-Object System.Collections.Generic.List[string]
+    }
+    $script:PythonDiscoveryLog.Add($Message)
+    Write-InstallLog $Message $Level
+}
+
+function Get-PythonDiscoveryText {
+    if ($null -eq $script:PythonDiscoveryLog -or $script:PythonDiscoveryLog.Count -eq 0) {
+        return 'No Python discovery records were written.'
+    }
+    return ($script:PythonDiscoveryLog -join "`n")
+}
+
+function Limit-DiscoveryText {
+    param(
+        [AllowEmptyString()][string]$Text,
+        [int]$Limit = 800
+    )
+    if ([string]::IsNullOrEmpty($Text)) {
+        return ''
+    }
+    if ($Text.Length -le $Limit) {
+        return $Text
+    }
+    return $Text.Substring(0, $Limit)
+}
+
+function Test-SupportedPythonVersion {
+    param([AllowEmptyString()][string]$Version)
+    return [bool]($Version -match '^3\.(1[2-9]|[2-9]\d)(\.|$)')
+}
+
+function Test-SamePath {
+    param(
+        [AllowEmptyString()][string]$Left,
+        [AllowEmptyString()][string]$Right
+    )
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+    $a = $Left
+    $b = $Right
+    try { $a = [System.IO.Path]::GetFullPath($Left) } catch { }
+    try { $b = [System.IO.Path]::GetFullPath($Right) } catch { }
+    return ($a.TrimEnd('\') -ieq $b.TrimEnd('\'))
+}
+
+function Test-RejectedPythonPath {
+    param(
+        [AllowEmptyString()][string]$Path,
+        [string]$InstallRoot
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return 'path is empty'
+    }
+    $full = $Path
+    try {
+        $full = [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        $full = $Path
+    }
+    if ($full -like '*python_embeded*') {
+        return 'ComfyUI embedded interpreter'
+    }
+    if ($full -like '*\Microsoft\WindowsApps\*' -or $full -like '*\WindowsApps\*') {
+        return 'WindowsApps execution alias'
+    }
+    $leaf = [System.IO.Path]::GetFileName($full).ToLowerInvariant()
+    if ($leaf -eq 'py.exe' -or $leaf -eq 'pyw.exe' -or $leaf -eq 'pythonw.exe') {
+        return 'launcher executable is not a Python runtime'
+    }
+    if ($leaf -ne 'python.exe' -and $leaf -ne 'python3.exe') {
+        return "unsupported executable name $leaf"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        try {
+            $venvRoot = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot 'venv'))
+            $prefix = $venvRoot.TrimEnd('\') + '\'
+            if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return 'gateway virtual environment'
             }
+        } catch {
         }
     }
-    foreach ($launcher in $launchers) {
-        $arguments = @($launcher.Prefix) + @('-c', 'import sys; sys.stdout.write(sys.version.split()[0] + "\n" + sys.executable + "\n")')
-        $output = & $launcher.Executable @arguments 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            continue
-        }
-        $lines = @($output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-        if ($lines.Count -lt 2) {
-            continue
-        }
-        $version = [string]$lines[$lines.Count - 2]
-        $executable = [string]$lines[$lines.Count - 1]
-        if ($executable -like '*python_embeded*') {
-            continue
-        }
-        if ($version -match '^3\.(1[2-9]|[2-9]\d)(\.|$)') {
-            return @{
-                Version    = $version.Trim()
-                Executable = $executable.Trim()
-            }
-        }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return 'file does not exist'
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item -or $item.PSIsContainer) {
+        return 'path is not a file'
+    }
+    if ([int64]$item.Length -le 0) {
+        return 'file is empty'
     }
     return $null
+}
+
+function Add-UniquePythonCandidate {
+    param(
+        $List,
+        $Seen,
+        [AllowEmptyString()][string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+    $key = $Path.Trim().ToLowerInvariant()
+    if ($Seen.ContainsKey($key)) {
+        return
+    }
+    $Seen[$key] = $true
+    [void]$List.Add($Path.Trim())
+}
+
+function Get-StoredPythonExecutable {
+    param([string]$InstallRoot)
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+        return ''
+    }
+    $path = Join-Path $InstallRoot 'config\installed.json'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return ''
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Write-PythonDiscovery "Could not read the stored Python path from $path. $($_.Exception.Message)" 'WARN'
+        return ''
+    }
+    $stored = [string](Get-ObjectProperty -Object $manifest -Name 'python_executable')
+    if (-not [string]::IsNullOrWhiteSpace($stored)) {
+        return $stored
+    }
+    $components = Get-ObjectProperty -Object $manifest -Name 'components'
+    $python = Get-ObjectProperty -Object $components -Name 'python'
+    $facts = Get-ObjectProperty -Object $python -Name 'facts'
+    return [string](Get-ObjectProperty -Object $facts -Name 'executable')
+}
+
+function Get-RegisteredPythonExecutables {
+    $paths = New-Object System.Collections.Generic.List[string]
+    foreach ($root in @(
+            'HKCU:\Software\Python\PythonCore',
+            'HKLM:\Software\Python\PythonCore',
+            'HKLM:\Software\WOW6432Node\Python\PythonCore'
+        )) {
+        try {
+            if (-not (Test-Path -LiteralPath $root)) {
+                continue
+            }
+            foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction Stop)) {
+                $versionName = [string]$key.PSChildName
+                if ($versionName -notmatch '^3\.(1[2-9]|[2-9]\d)') {
+                    continue
+                }
+                if ($versionName -match '-32') {
+                    continue
+                }
+                $installKey = 'Registry::' + $key.Name + '\InstallPath'
+                if (-not (Test-Path -LiteralPath $installKey)) {
+                    continue
+                }
+                $item = Get-Item -LiteralPath $installKey -ErrorAction Stop
+                $exe = [string]$item.GetValue('ExecutablePath')
+                if ([string]::IsNullOrWhiteSpace($exe)) {
+                    $dir = [string]$item.GetValue('')
+                    if (-not [string]::IsNullOrWhiteSpace($dir)) {
+                        $exe = Join-Path $dir 'python.exe'
+                    }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($exe)) {
+                    $paths.Add($exe)
+                }
+            }
+        } catch {
+            Write-PythonDiscovery "Registry Python key $root could not be read. $($_.Exception.Message)" 'WARN'
+        }
+    }
+    return ,$paths.ToArray()
+}
+
+function Get-KnownPythonExecutables {
+    $paths = New-Object System.Collections.Generic.List[string]
+    $roots = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $roots.Add((Join-Path $env:LOCALAPPDATA 'Programs\Python'))
+        $roots.Add((Join-Path $env:LOCALAPPDATA 'Python'))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $roots.Add($env:ProgramFiles)
+        $roots.Add((Join-Path $env:ProgramFiles 'Python'))
+    }
+    $programFilesX86 = [string]${env:ProgramFiles(x86)}
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+        $roots.Add($programFilesX86)
+        $roots.Add((Join-Path $programFilesX86 'Python'))
+    }
+    foreach ($root in @($roots.ToArray())) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+        foreach ($directory in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+            $name = [string]$directory.Name
+            if ($name -notmatch '^(Python3\d+|Python\d+|pythoncore-3\.(1[2-9]|[2-9]\d).*)$') {
+                continue
+            }
+            if ($name -match '-32') {
+                continue
+            }
+            $candidate = Join-Path $directory.FullName 'python.exe'
+            if (Test-Path -LiteralPath $candidate) {
+                $paths.Add($candidate)
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $pinned = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
+        if (Test-Path -LiteralPath $pinned) {
+            $paths.Add($pinned)
+        }
+    }
+    return ,$paths.ToArray()
+}
+
+function Get-PathPythonExecutables {
+    $paths = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($env:Path)) {
+        return ,@()
+    }
+    foreach ($entry in @($env:Path -split ';')) {
+        $directory = $entry.Trim().Trim('"')
+        if ([string]::IsNullOrWhiteSpace($directory)) {
+            continue
+        }
+        if ($directory -like '*\WindowsApps*') {
+            continue
+        }
+        foreach ($name in @('python.exe', 'python3.exe')) {
+            $candidate = Join-Path $directory $name
+            if (Test-Path -LiteralPath $candidate) {
+                $paths.Add($candidate)
+            }
+        }
+    }
+    return ,$paths.ToArray()
+}
+
+function ConvertFrom-PythonLauncherList {
+    param([AllowEmptyString()][string]$Text)
+    $paths = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ,@()
+    }
+    if ($Text -match 'No suitable Python runtime found') {
+        return ,@()
+    }
+    $found = [regex]::Matches($Text, '[A-Za-z]:\\(?:[^:\r\n]*?)python(?:3)?\.exe')
+    foreach ($match in @($found)) {
+        $value = [string]$match.Value
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $paths.Add($value.Trim())
+        }
+    }
+    return ,$paths.ToArray()
+}
+
+function Test-CanExecuteFile {
+    param([AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item -or $item.PSIsContainer) {
+        return $false
+    }
+    return ([int64]$item.Length -gt 0)
+}
+
+function Get-LivePythonLauncherText {
+    $command = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        Write-PythonDiscovery 'Python launcher py.exe was not found.'
+        return ''
+    }
+    $pyPath = [string]$command.Source
+    $shown = "$pyPath -0p"
+    if (-not (Test-CanExecuteFile -Path $pyPath)) {
+        Write-PythonDiscovery "Ignoring Python launcher that cannot be executed: $shown" 'WARN'
+        return ''
+    }
+    Write-PythonDiscovery "Listing Python launcher runtimes with: $shown"
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $restoreNative = $false
+    $savedNative = $null
+    if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
+        $restoreNative = $true
+        $savedNative = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        $output = & $pyPath -0p 2>&1
+        $code = $LASTEXITCODE
+        $text = (@($output) | ForEach-Object { [string]$_ }) -join "`n"
+        Write-PythonDiscovery "Launcher command $shown exited $code. Output: $(Limit-DiscoveryText -Text $text)"
+        return $text
+    } catch {
+        $message = [string]$_.Exception.Message
+        Write-PythonDiscovery "Launcher command $shown failed: $message" 'WARN'
+        return $message
+    } finally {
+        $ErrorActionPreference = $previous
+        if ($restoreNative) {
+            $PSNativeCommandUseErrorActionPreference = $savedNative
+        }
+    }
+}
+
+function Invoke-PythonRuntimeProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [scriptblock]$ProbeCommand,
+        [switch]$SkipVenvProbe
+    )
+    $command = "$Executable -c <version, pip, venv>"
+    if ($ProbeCommand) {
+        $result = & $ProbeCommand $Executable ([bool]$SkipVenvProbe)
+        if ($null -eq $result) {
+            return @{
+                Ok          = $false
+                Reason      = 'probe returned no result'
+                Command     = $command
+                Executable  = $Executable
+                Version     = ''
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = ''
+            }
+        }
+        return $result
+    }
+    $code = @'
+import struct, sys
+state = "venv-import-ok"
+try:
+    import venv
+except Exception:
+    state = "venv-import-missing"
+sys.stdout.write("LAS_VERSION=" + sys.version.split()[0] + "\n")
+sys.stdout.write("LAS_EXECUTABLE=" + sys.executable + "\n")
+sys.stdout.write("LAS_BITS=" + str(struct.calcsize("P") * 8) + "\n")
+sys.stdout.write("LAS_VENV=" + state + "\n")
+'@
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $restoreNative = $false
+    $savedNative = $null
+    if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
+        $restoreNative = $true
+        $savedNative = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        $output = & $Executable -c $code 2>&1
+        $exitCode = $LASTEXITCODE
+        $text = Limit-DiscoveryText -Text ((@($output) | ForEach-Object { [string]$_ }) -join "`n") -Limit 2000
+        if ($exitCode -ne 0 -or $text -match 'No suitable Python runtime found') {
+            $reason = "exit code $exitCode"
+            if ($text -match 'No suitable Python runtime found') {
+                $reason = 'No suitable Python runtime found'
+            }
+            return @{
+                Ok          = $false
+                Reason      = $reason
+                Command     = $command
+                Executable  = $Executable
+                Version     = ''
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        $version = ''
+        $reported = ''
+        $bits = ''
+        $venvState = ''
+        foreach ($line in @($text -split "`r?`n")) {
+            $value = [string]$line
+            if ($value.StartsWith('LAS_VERSION=')) { $version = $value.Substring(12).Trim() }
+            elseif ($value.StartsWith('LAS_EXECUTABLE=')) { $reported = $value.Substring(15).Trim() }
+            elseif ($value.StartsWith('LAS_BITS=')) { $bits = $value.Substring(9).Trim() }
+            elseif ($value.StartsWith('LAS_VENV=')) { $venvState = $value.Substring(9).Trim() }
+        }
+        if ([string]::IsNullOrWhiteSpace($version) -or [string]::IsNullOrWhiteSpace($reported)) {
+            return @{
+                Ok          = $false
+                Reason      = 'unexpected probe output'
+                Command     = $command
+                Executable  = $Executable
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        if ($reported -like '*python_embeded*' -or $Executable -like '*python_embeded*') {
+            return @{
+                Ok          = $false
+                Reason      = 'ComfyUI embedded interpreter'
+                Command     = $command
+                Executable  = $reported
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        if ($bits -ne '64') {
+            return @{
+                Ok          = $false
+                Reason      = "architecture is $bits-bit"
+                Command     = $command
+                Executable  = $reported
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        if (-not (Test-SupportedPythonVersion -Version $version)) {
+            return @{
+                Ok          = $false
+                Reason      = "version $version is not 3.12 or newer"
+                Command     = $command
+                Executable  = $reported
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        if ($venvState -ne 'venv-import-ok') {
+            return @{
+                Ok          = $false
+                Reason      = 'venv module is missing'
+                Command     = $command
+                Executable  = $reported
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $text
+            }
+        }
+        $pipCommand = "$Executable -m pip --version"
+        $pipOutput = & $Executable -m pip --version 2>&1
+        $pipCode = $LASTEXITCODE
+        $pipText = Limit-DiscoveryText -Text ((@($pipOutput) | ForEach-Object { [string]$_ }) -join "`n")
+        if ($pipCode -ne 0) {
+            return @{
+                Ok          = $false
+                Reason      = 'pip is missing'
+                Command     = $pipCommand
+                Executable  = $reported
+                Version     = $version
+                Pip         = $false
+                Venv        = $false
+                ErrorOutput = $pipText
+            }
+        }
+        if (-not $SkipVenvProbe) {
+            $probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('las-venv-probe-' + [guid]::NewGuid().ToString('n'))
+            $venvCommand = "$Executable -m venv $probeRoot"
+            try {
+                $venvOutput = & $Executable -m venv $probeRoot 2>&1
+                $venvExit = $LASTEXITCODE
+                $venvExe = Join-Path (Join-Path $probeRoot 'Scripts') 'python.exe'
+                $venvText = Limit-DiscoveryText -Text ((@($venvOutput) | ForEach-Object { [string]$_ }) -join "`n")
+                if ($venvExit -ne 0 -or -not (Test-Path -LiteralPath $venvExe)) {
+                    return @{
+                        Ok          = $false
+                        Reason      = "venv creation failed with exit code $venvExit"
+                        Command     = $venvCommand
+                        Executable  = $reported
+                        Version     = $version
+                        Pip         = $true
+                        Venv        = $false
+                        ErrorOutput = $venvText
+                    }
+                }
+                if ($venvExe -like '*python_embeded*') {
+                    return @{
+                        Ok          = $false
+                        Reason      = 'venv interpreter is inside python_embeded'
+                        Command     = $venvCommand
+                        Executable  = $reported
+                        Version     = $version
+                        Pip         = $true
+                        Venv        = $false
+                        ErrorOutput = $venvText
+                    }
+                }
+            } finally {
+                if (Test-Path -LiteralPath $probeRoot) {
+                    Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        $absolute = $reported
+        if (-not [System.IO.Path]::IsPathRooted($absolute)) {
+            $absolute = [System.IO.Path]::GetFullPath($Executable)
+        }
+        return @{
+            Ok          = $true
+            Reason      = ''
+            Command     = $command
+            Executable  = $absolute
+            Version     = $version
+            Pip         = $true
+            Venv        = $true
+            ErrorOutput = ''
+        }
+    } catch {
+        return @{
+            Ok          = $false
+            Reason      = [string]$_.Exception.Message
+            Command     = $command
+            Executable  = $Executable
+            Version     = ''
+            Pip         = $false
+            Venv        = $false
+            ErrorOutput = [string]$_.Exception.Message
+        }
+    } finally {
+        $ErrorActionPreference = $previous
+        if ($restoreNative) {
+            $PSNativeCommandUseErrorActionPreference = $savedNative
+        }
+    }
+}
+
+function Find-Python312 {
+    param(
+        [string]$InstallRoot,
+        [string[]]$CandidatePaths,
+        [scriptblock]$ProbeCommand,
+        [switch]$FromCandidatePathsOnly,
+        [switch]$Fresh,
+        [switch]$SkipVenvProbe,
+        [string]$LauncherOutput
+    )
+    # The launcher version switch is not used to select a runtime. When no runtime
+    # is registered it prints "No suitable Python runtime found" and can abort the
+    # installer under ErrorAction Stop. Inventory uses -0p only. The selected
+    # runtime is always an absolute python.exe that has been executed and checked.
+    if (-not $Fresh -and $null -ne $script:ResolvedPythonRuntime -and $script:ResolvedPythonRuntime.Executable) {
+        return $script:ResolvedPythonRuntime
+    }
+    $script:PythonDiscoveryLog = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $candidates = New-Object System.Collections.Generic.List[string]
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+            Add-UniquePythonCandidate -List $candidates -Seen $seen -Path (Get-StoredPythonExecutable -InstallRoot $InstallRoot)
+        }
+        foreach ($path in @($CandidatePaths)) {
+            Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+        }
+        if (-not $FromCandidatePathsOnly) {
+            foreach ($path in @(Get-RegisteredPythonExecutables)) {
+                Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+            }
+            foreach ($path in @(Get-KnownPythonExecutables)) {
+                Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+            }
+            foreach ($path in @(Get-PathPythonExecutables)) {
+                Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+            }
+            $live = Get-LivePythonLauncherText
+            if ($live -match 'No suitable Python runtime found') {
+                Write-PythonDiscovery 'Python launcher reported no suitable runtime. Discovery continued without treating the launcher as an interpreter.' 'WARN'
+            }
+            foreach ($path in @(ConvertFrom-PythonLauncherList -Text $live)) {
+                Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+            }
+        }
+        if ($PSBoundParameters.ContainsKey('LauncherOutput')) {
+            if ($LauncherOutput -match 'No suitable Python runtime found') {
+                Write-PythonDiscovery 'Python launcher reported no suitable runtime. Discovery continued without treating the launcher as an interpreter.' 'WARN'
+                Write-PythonDiscovery (Limit-DiscoveryText -Text $LauncherOutput) 'WARN'
+            }
+            foreach ($path in @(ConvertFrom-PythonLauncherList -Text $LauncherOutput)) {
+                Add-UniquePythonCandidate -List $candidates -Seen $seen -Path ([string]$path)
+            }
+        }
+    } catch {
+        Write-PythonDiscovery "Python discovery could not inspect the machine. $($_.Exception.Message)" 'WARN'
+    }
+    foreach ($candidate in @($candidates.ToArray())) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+            continue
+        }
+        $reason = Test-RejectedPythonPath -Path $candidate -InstallRoot $InstallRoot
+        if ($reason) {
+            Write-PythonDiscovery "Skipping Python candidate: $candidate. Reason: $reason. It was not executed."
+            continue
+        }
+        $probeCommandText = "$candidate -c <version, pip, venv>"
+        Write-PythonDiscovery "Probing Python candidate: $candidate. Command: $probeCommandText"
+        try {
+            $probe = Invoke-PythonRuntimeProbe -Executable $candidate -ProbeCommand $ProbeCommand -SkipVenvProbe:$SkipVenvProbe
+        } catch {
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Command: $probeCommandText. Error: $($_.Exception.Message)" 'WARN'
+            continue
+        }
+        $probeReason = [string](Get-ObjectProperty -Object $probe -Name 'Reason')
+        $probeCommandShown = [string](Get-ObjectProperty -Object $probe -Name 'Command')
+        $probeError = [string](Get-ObjectProperty -Object $probe -Name 'ErrorOutput')
+        $probeVersion = [string](Get-ObjectProperty -Object $probe -Name 'Version')
+        $probeExecutable = [string](Get-ObjectProperty -Object $probe -Name 'Executable')
+        $probeOk = [bool](Get-ObjectProperty -Object $probe -Name 'Ok')
+        if ([string]::IsNullOrWhiteSpace($probeCommandShown)) {
+            $probeCommandShown = $probeCommandText
+        }
+        if (-not $probeOk) {
+            $suffix = ''
+            if (-not [string]::IsNullOrWhiteSpace($probeError)) {
+                $suffix = " Output: $(Limit-DiscoveryText -Text $probeError)"
+            }
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Reason: $probeReason. Command: $probeCommandShown.$suffix" 'WARN'
+            continue
+        }
+        if (-not (Test-SupportedPythonVersion -Version $probeVersion)) {
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Reason: version $probeVersion is not 3.12 or newer. Command: $probeCommandShown" 'WARN'
+            continue
+        }
+        $pipValue = Get-ObjectProperty -Object $probe -Name 'Pip'
+        if ($null -ne $pipValue -and -not [bool]$pipValue) {
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Reason: pip is missing. Command: $probeCommandShown" 'WARN'
+            continue
+        }
+        $venvValue = Get-ObjectProperty -Object $probe -Name 'Venv'
+        if ($null -ne $venvValue -and -not [bool]$venvValue) {
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Reason: venv creation failed. Command: $probeCommandShown" 'WARN'
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($probeExecutable)) {
+            $probeExecutable = $candidate
+        }
+        $selectedReason = Test-RejectedPythonPath -Path $probeExecutable -InstallRoot $InstallRoot
+        if ($selectedReason) {
+            Write-PythonDiscovery "Rejected Python candidate $candidate. Reported interpreter $probeExecutable. Reason: $selectedReason. Command: $probeCommandShown" 'WARN'
+            continue
+        }
+        $selected = @{
+            Version    = $probeVersion
+            Executable = $probeExecutable
+            Command    = $probeCommandShown
+            Pip        = $true
+            Venv       = $true
+        }
+        $script:ResolvedPythonRuntime = $selected
+        Write-PythonDiscovery "Selected Python $($selected.Version) at $($selected.Executable). Command: $($selected.Command)"
+        return $selected
+    }
+    Write-PythonDiscovery 'No compatible Python runtime was selected.'
+    return $null
+}
+
+function Resolve-InstallerPython {
+    param(
+        [string]$InstallRoot,
+        [scriptblock]$InstallCommand,
+        [string[]]$CandidatePaths,
+        [scriptblock]$ProbeCommand,
+        [switch]$FromCandidatePathsOnly,
+        [switch]$Fresh,
+        [string]$LauncherOutput
+    )
+    $parameters = @{
+        InstallRoot = $InstallRoot
+    }
+    if ($CandidatePaths) {
+        $parameters.CandidatePaths = $CandidatePaths
+    }
+    if ($ProbeCommand) {
+        $parameters.ProbeCommand = $ProbeCommand
+    }
+    if ($FromCandidatePathsOnly) {
+        $parameters.FromCandidatePathsOnly = $true
+    }
+    if ($Fresh) {
+        $parameters.Fresh = $true
+    }
+    if ($PSBoundParameters.ContainsKey('LauncherOutput')) {
+        $parameters.LauncherOutput = $LauncherOutput
+    }
+    $found = Find-Python312 @parameters
+    if ($null -ne $found) {
+        return @{ Installed = $false; Runtime = $found; Result = $null }
+    }
+    if (-not $InstallCommand) {
+        return @{ Installed = $false; Runtime = $null; Result = $null }
+    }
+    $result = & $InstallCommand
+    $runtime = $null
+    if ($null -ne $script:ResolvedPythonRuntime) {
+        $runtime = $script:ResolvedPythonRuntime
+    }
+    return @{ Installed = $true; Runtime = $runtime; Result = $result }
+}
+
+function Get-PinnedPythonDirectory {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw 'LOCALAPPDATA is not set. The pinned Python install needs a per-user directory.'
+    }
+    return (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312')
+}
+
+function Get-PinnedPythonInstallerArguments {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [bool]$IncludeLauncher = $true
+    )
+    $launcher = '0'
+    if ($IncludeLauncher) {
+        $launcher = '1'
+    }
+    $quotedTarget = '"{0}"' -f $TargetDir
+    return "/quiet InstallAllUsers=0 InstallLauncherAllUsers=0 PrependPath=1 Include_launcher=$launcher Include_pip=1 Include_test=0 TargetDir=$quotedTarget"
+}
+
+function Invoke-PinnedPythonInstallerProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallerPath,
+        [Parameter(Mandatory = $true)][string]$Arguments,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+        [scriptblock]$InstallerCommand
+    )
+    Write-PythonDiscovery "Running Python installer command: $InstallerPath $Arguments"
+    if ($InstallerCommand) {
+        $result = & $InstallerCommand $InstallerPath $Arguments $ExpectedExecutable
+        if ($null -eq $result) {
+            return -1
+        }
+        return [int]$result
+    }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $proc = Start-Process -FilePath $InstallerPath -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
+        if ($null -eq $proc) {
+            Write-PythonDiscovery 'Start-Process did not return a Python installer process.' 'ERROR'
+            return -1
+        }
+        Write-PythonDiscovery "Python installer process exited with code $($proc.ExitCode)."
+        return [int]$proc.ExitCode
+    } catch {
+        Write-PythonDiscovery "Python installer process failed: $($_.Exception.Message)" 'ERROR'
+        return -1
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+function Wait-PinnedPythonExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+        [int]$Seconds = 10
+    )
+    $limit = $Seconds
+    if ($limit -lt 0) {
+        $limit = 0
+    }
+    $attempt = 0
+    while ($true) {
+        if (Test-Path -LiteralPath $ExpectedExecutable) {
+            $item = Get-Item -LiteralPath $ExpectedExecutable -Force -ErrorAction SilentlyContinue
+            if ($null -ne $item -and -not $item.PSIsContainer -and [int64]$item.Length -gt 0) {
+                return $true
+            }
+        }
+        if ($attempt -ge $limit) {
+            return $false
+        }
+        Start-Sleep -Seconds 1
+        $attempt++
+    }
+}
+
+function New-PythonInstallFacts {
+    param(
+        [string]$DownloadUrl,
+        [bool]$ChecksumVerified,
+        [string]$ChecksumAlgorithm,
+        $ExitCode,
+        [string]$ExpectedExecutable,
+        [string]$Detection,
+        [string]$ErrorOutput,
+        [string]$Authenticode,
+        [string]$Sha256,
+        [hashtable]$Extra
+    )
+    $facts = @{
+        download_url         = $DownloadUrl
+        checksum_verified    = $ChecksumVerified
+        checksum_algorithm   = $ChecksumAlgorithm
+        exit_code            = $ExitCode
+        expected_executable  = $ExpectedExecutable
+        detection            = $Detection
+        error_output         = $ErrorOutput
+        authenticode         = $Authenticode
+        sha256               = $Sha256
+    }
+    if ($Extra) {
+        foreach ($key in @($Extra.Keys)) {
+            $facts[$key] = $Extra[$key]
+        }
+    }
+    return $facts
+}
+
+function Complete-PinnedPythonInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallerPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+        [Parameter(Mandatory = $true)][string]$DownloadUrl,
+        [Parameter(Mandatory = $true)][bool]$ChecksumVerified,
+        [string]$ChecksumAlgorithm = 'MD5',
+        [string]$Checksum = '',
+        [string]$Sha256 = '',
+        [string]$Authenticode = '',
+        [scriptblock]$InstallerCommand,
+        [scriptblock]$ProbeCommand,
+        [int]$ExecutableWaitSeconds = 10
+    )
+    $targetDir = Split-Path -Parent $ExpectedExecutable
+    $repair = $false
+    if (Test-Path -LiteralPath $targetDir) {
+        $repair = $true
+        if (-not (Test-Path -LiteralPath $ExpectedExecutable)) {
+            Write-InstallLog "Python directory $targetDir is incomplete. The pinned installer will reinstall it."
+        } else {
+            Write-InstallLog "Repairing the Python installation at $targetDir."
+        }
+    } else {
+        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    }
+    $checksumText = 'failed'
+    if ($ChecksumVerified) {
+        $checksumText = "passed ($ChecksumAlgorithm)"
+    }
+    $arguments = Get-PinnedPythonInstallerArguments -TargetDir $targetDir -IncludeLauncher $true
+    $exitCode = Invoke-PinnedPythonInstallerProcess -InstallerPath $InstallerPath -Arguments $arguments -ExpectedExecutable $ExpectedExecutable -InstallerCommand $InstallerCommand
+    $attemptText = [string]$exitCode
+    $ready = Wait-PinnedPythonExecutable -ExpectedExecutable $ExpectedExecutable -Seconds $ExecutableWaitSeconds
+    if (($exitCode -ne 0 -and $exitCode -ne 3010) -or -not $ready) {
+        if (-not $ready) {
+            $fallback = Get-PinnedPythonInstallerArguments -TargetDir $targetDir -IncludeLauncher $false
+            Write-InstallLog "Python installer exit code $exitCode did not leave $ExpectedExecutable. Retrying without the launcher."
+            $exitCode = Invoke-PinnedPythonInstallerProcess -InstallerPath $InstallerPath -Arguments $fallback -ExpectedExecutable $ExpectedExecutable -InstallerCommand $InstallerCommand
+            $attemptText = "$attemptText,$exitCode"
+            $ready = Wait-PinnedPythonExecutable -ExpectedExecutable $ExpectedExecutable -Seconds $ExecutableWaitSeconds
+        }
+    }
+    $detection = Get-PythonDiscoveryText
+    if (-not $ready) {
+        if ($exitCode -eq 0 -or $exitCode -eq 3010) {
+            $detail = "Python 3.12.10 installation completed, but the expected executable was not found at: $ExpectedExecutable. Download: $DownloadUrl. Download verification: $checksumText. Installer exit code: $exitCode. Detection: $detection."
+        } else {
+            $detail = "No compatible Python runtime found. Automatic installation failed with exit code $exitCode. Download: $DownloadUrl. Download verification: $checksumText. Expected executable: $ExpectedExecutable. Detection: $detection."
+        }
+        return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $DownloadUrl -ChecksumVerified $ChecksumVerified -ChecksumAlgorithm $ChecksumAlgorithm -ExitCode $exitCode -ExpectedExecutable $ExpectedExecutable -Detection $detection -ErrorOutput $detection -Authenticode $Authenticode -Sha256 $Sha256 -Extra @{ attempts = $attemptText; checksum = $Checksum }))
+    }
+    $probe = Invoke-PythonRuntimeProbe -Executable $ExpectedExecutable -ProbeCommand $ProbeCommand
+    $probeOk = [bool](Get-ObjectProperty -Object $probe -Name 'Ok')
+    $probeVersion = [string](Get-ObjectProperty -Object $probe -Name 'Version')
+    $probeExecutable = [string](Get-ObjectProperty -Object $probe -Name 'Executable')
+    $probeCommand = [string](Get-ObjectProperty -Object $probe -Name 'Command')
+    $probeReason = [string](Get-ObjectProperty -Object $probe -Name 'Reason')
+    $probeError = [string](Get-ObjectProperty -Object $probe -Name 'ErrorOutput')
+    $actual = "version $($probeVersion) at $probeExecutable. Reason: $probeReason. Command: $probeCommand. Output: $(Limit-DiscoveryText -Text $probeError)"
+    if (-not $probeOk -or $probeVersion -notlike '3.12.10*') {
+        $detail = "No compatible Python runtime found. Automatic installation failed with exit code $exitCode. The executable at $ExpectedExecutable failed validation ($actual). Download: $DownloadUrl. Download verification: $checksumText. Expected executable: $ExpectedExecutable."
+        return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $DownloadUrl -ChecksumVerified $ChecksumVerified -ChecksumAlgorithm $ChecksumAlgorithm -ExitCode $exitCode -ExpectedExecutable $ExpectedExecutable -Detection $actual -ErrorOutput $probeError -Authenticode $Authenticode -Sha256 $Sha256 -Extra @{ attempts = $attemptText }))
+    }
+    if (-not (Test-SamePath -Left $probeExecutable -Right $ExpectedExecutable)) {
+        $detail = "Python 3.12.10 installation completed, but the expected executable was not found at: $ExpectedExecutable. Detection reported $probeExecutable. Download: $DownloadUrl. Download verification: $checksumText. Installer exit code: $exitCode."
+        return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $DownloadUrl -ChecksumVerified $ChecksumVerified -ChecksumAlgorithm $ChecksumAlgorithm -ExitCode $exitCode -ExpectedExecutable $ExpectedExecutable -Detection $actual -ErrorOutput $probeError -Authenticode $Authenticode -Sha256 $Sha256))
+    }
+    if (-not $InstallerCommand) {
+        Update-SessionPath
+        Write-InstallLog "Session PATH was refreshed. Python commands in this install use $probeExecutable."
+    }
+    $script:ResolvedPythonRuntime = @{
+        Version    = $probeVersion
+        Executable = $probeExecutable
+        Command    = $probeCommand
+        Pip        = $true
+        Venv       = $true
+    }
+    $action = 'installed'
+    if ($repair) {
+        $action = 'repaired'
+    }
+    Write-InstallLog "Python version command: $probeCommand reported $probeVersion."
+    return (New-StageResult -Verified $true -Detail 'Python 3.12.10 installed and the version command succeeded.' -Facts @{
+            action              = $action
+            version             = $probeVersion
+            executable          = $probeExecutable
+            command             = $probeCommand
+            authenticode        = $Authenticode
+            md5_verified        = $true
+            sha256              = $Sha256
+            download_url        = $DownloadUrl
+            exit_code           = $exitCode
+            expected_executable = $ExpectedExecutable
+            checksum_verified   = $true
+        })
+}
+
+function Install-PinnedPythonPackage {
+    param(
+        [Parameter(Mandatory = $true)]$Pins,
+        [Parameter(Mandatory = $true)][string]$InstallerPath,
+        [switch]$DryRun,
+        [scriptblock]$DownloadCommand,
+        [scriptblock]$SignatureCommand,
+        [scriptblock]$InstallerCommand,
+        [scriptblock]$ProbeCommand,
+        [int]$ExecutableWaitSeconds = 10,
+        [string]$ExpectedExecutable
+    )
+    $pythonPin = Get-PythonPin -Pins $Pins
+    $downloadUrl = [string](Get-ObjectProperty -Object $pythonPin -Name 'url')
+    $algorithm = [string](Get-ObjectProperty -Object $pythonPin -Name 'algorithm')
+    $checksum = [string](Get-ObjectProperty -Object $pythonPin -Name 'checksum')
+    $subject = [string](Get-ObjectProperty -Object $pythonPin -Name 'authenticode_subject')
+    $sha256 = [string](Get-ObjectProperty -Object $pythonPin -Name 'sha256')
+    $expectedBytes = 0
+    $bytesValue = Get-ObjectProperty -Object $pythonPin -Name 'expected_bytes'
+    if ($null -ne $bytesValue -and [int64]$bytesValue -gt 0) {
+        $expectedBytes = [int64]$bytesValue
+    }
+    if ([string]::IsNullOrWhiteSpace($ExpectedExecutable)) {
+        $ExpectedExecutable = Join-Path (Get-PinnedPythonDirectory) 'python.exe'
+    }
+    try {
+        if ($DownloadCommand) {
+            $saved = [bool](& $DownloadCommand $downloadUrl $InstallerPath)
+        } else {
+            $saved = [bool](Save-PinnedFile -Url $downloadUrl -Destination $InstallerPath -Algorithm $algorithm -Checksum $checksum -ExpectedBytes $expectedBytes -Label 'Python 3.12.10' -DryRun:$DryRun)
+        }
+    } catch {
+        $message = [string]$_.Exception.Message
+        $detail = "No compatible Python runtime found. Automatic installation failed. Download verification failed for $downloadUrl. $message"
+        return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $downloadUrl -ChecksumVerified $false -ChecksumAlgorithm $algorithm -ExitCode $null -ExpectedExecutable $ExpectedExecutable -Detection (Get-PythonDiscoveryText) -ErrorOutput $message -Sha256 $sha256))
+    }
+    if (-not $saved) {
+        return (New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' })
+    }
+    if (-not [string]::IsNullOrWhiteSpace($sha256)) {
+        $shaOk = Test-PinnedFileHash -Path $InstallerPath -Algorithm 'SHA256' -Checksum $sha256 -ExpectedBytes 0
+        if (-not $shaOk) {
+            $detail = "No compatible Python runtime found. Automatic installation failed. SHA256 verification failed for $downloadUrl."
+            return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $downloadUrl -ChecksumVerified $false -ChecksumAlgorithm 'SHA256' -ExitCode $null -ExpectedExecutable $ExpectedExecutable -Detection (Get-PythonDiscoveryText) -ErrorOutput "SHA256 verification failed for $InstallerPath" -Sha256 $sha256))
+        }
+        Write-InstallLog 'Python installer SHA256 verified.'
+    }
+    if ($SignatureCommand) {
+        $signature = & $SignatureCommand $InstallerPath
+    } else {
+        $signature = Test-Authenticode -Path $InstallerPath -SubjectLike $subject
+    }
+    $status = [string](Get-ObjectProperty -Object $signature -Name 'Status')
+    $trusted = [bool](Get-ObjectProperty -Object $signature -Name 'Trusted')
+    Write-InstallLog "Python installer Authenticode status $status."
+    if (-not $trusted) {
+        $detail = "The Python installer signature is $status. Download: $downloadUrl. Download verification: passed ($algorithm). Expected executable: $ExpectedExecutable."
+        return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $downloadUrl -ChecksumVerified $true -ChecksumAlgorithm $algorithm -ExitCode $null -ExpectedExecutable $ExpectedExecutable -Detection (Get-PythonDiscoveryText) -ErrorOutput $status -Authenticode $status -Sha256 $sha256))
+    }
+    return (Complete-PinnedPythonInstall -InstallerPath $InstallerPath -ExpectedExecutable $ExpectedExecutable -DownloadUrl $downloadUrl -ChecksumVerified $true -ChecksumAlgorithm $algorithm -Checksum $checksum -Sha256 $sha256 -Authenticode $status -InstallerCommand $InstallerCommand -ProbeCommand $ProbeCommand -ExecutableWaitSeconds $ExecutableWaitSeconds)
+}
+
+function Test-GatewayVirtualEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [scriptblock]$ProbeCommand
+    )
+    if ($VenvPython -like '*python_embeded*') {
+        return @{ Ok = $false; Detail = 'The gateway interpreter is inside ComfyUI python_embeded.'; Version = '' }
+    }
+    if (-not (Test-Path -LiteralPath $VenvPython)) {
+        return @{ Ok = $false; Detail = "The gateway virtual environment Python was not found at $VenvPython."; Version = '' }
+    }
+    $probe = Invoke-PythonRuntimeProbe -Executable $VenvPython -ProbeCommand $ProbeCommand -SkipVenvProbe
+    $probeOk = [bool](Get-ObjectProperty -Object $probe -Name 'Ok')
+    $version = [string](Get-ObjectProperty -Object $probe -Name 'Version')
+    $reason = [string](Get-ObjectProperty -Object $probe -Name 'Reason')
+    $command = [string](Get-ObjectProperty -Object $probe -Name 'Command')
+    if (-not $probeOk) {
+        return @{ Ok = $false; Detail = "The gateway virtual environment failed validation. $reason Command: $command"; Version = $version }
+    }
+    return @{ Ok = $true; Detail = "$version $VenvPython"; Version = $version }
+}
+
+function Get-GatewayVenvPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [scriptblock]$ProbeCommand
+    )
+    if (Test-Path -LiteralPath $VenvPython) {
+        $check = Test-GatewayVirtualEnvironment -VenvPython $VenvPython -ProbeCommand $ProbeCommand
+        if ($check.Ok) {
+            return @{ Action = 'reuse'; Ok = $true; Detail = [string]$check.Detail }
+        }
+        return @{ Action = 'invalid'; Ok = $false; Detail = [string]$check.Detail }
+    }
+    $scriptsDir = Split-Path -Parent $VenvPython
+    $venvRoot = Split-Path -Parent $scriptsDir
+    if (Test-Path -LiteralPath $venvRoot) {
+        return @{ Action = 'blocked'; Ok = $false; Detail = 'The venv directory exists without Scripts\python.exe. It was left unchanged.' }
+    }
+    return @{ Action = 'create'; Ok = $true; Detail = '' }
+}
+
+function Invoke-GatewayVenvCreate {
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExecutable,
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [scriptblock]$Runner
+    )
+    $scriptsDir = Split-Path -Parent $VenvPython
+    $venvRoot = Split-Path -Parent $scriptsDir
+    $command = '"{0}" -m venv "{1}"' -f $PythonExecutable, $venvRoot
+    $rejected = Test-RejectedPythonPath -Path $PythonExecutable
+    if ($rejected) {
+        return @{ Ok = $false; Detail = "Refusing to build the gateway virtual environment with $PythonExecutable. Reason: $rejected."; Command = $command }
+    }
+    if ($PythonExecutable -like '*python_embeded*') {
+        return @{ Ok = $false; Detail = 'Refusing to build the gateway virtual environment with the ComfyUI embedded interpreter.'; Command = $command }
+    }
+    Write-InstallLog "Creating gateway virtual environment with: $command"
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($Runner) {
+            $result = & $Runner $PythonExecutable $venvRoot
+            if ($null -eq $result) {
+                $exitCode = 0
+            } else {
+                $exitCode = [int]$result
+            }
+        } else {
+            & $PythonExecutable -m venv $venvRoot
+            $exitCode = $LASTEXITCODE
+        }
+    } catch {
+        return @{ Ok = $false; Detail = "The gateway virtual environment was not created. Command: $command. Error: $($_.Exception.Message)"; Command = $command }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
+        return @{ Ok = $false; Detail = "The gateway virtual environment was not created. Command: $command. Exit code: $exitCode."; Command = $command }
+    }
+    if ($VenvPython -like '*python_embeded*') {
+        return @{ Ok = $false; Detail = 'The gateway interpreter is inside ComfyUI python_embeded.'; Command = $command }
+    }
+    return @{ Ok = $true; Detail = $command; Command = $command }
 }
 
 function Find-OllamaExecutable {

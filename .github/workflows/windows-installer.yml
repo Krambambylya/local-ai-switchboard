@@ -71,7 +71,27 @@ jobs:
           if (-not $binding) {
             Write-Error 'install.ps1 is missing CmdletBinding.'
           }
-          Write-Output 'Parsed installer scripts. -Root aliases -InstallRoot. No installer script references winget.'
+          $runtimeTest = Resolve-Path 'tests\installer_python_runtime.ps1'
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($runtimeTest.Path, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Output 'Parsed installer scripts with Windows PowerShell 5.1. -Root aliases -InstallRoot. No installer script references winget.'
+
+      - name: Run Python runtime discovery tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            Write-Error "Windows PowerShell 5.1 is required. Found $($PSVersionTable.PSVersion)"
+          }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\installer_python_runtime.ps1
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Run installer tests
         shell: powershell

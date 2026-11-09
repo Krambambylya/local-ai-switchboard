@@ -85,13 +85,18 @@ Write-InstallLog "Profile $Profile. Install root $InstallRoot. Source $SourceRoo
 
 function Save-StateManifest {
     param([hashtable]$Components)
+    $pythonExecutable = ''
+    if ($null -ne $script:ResolvedPythonRuntime -and $script:ResolvedPythonRuntime.Executable) {
+        $pythonExecutable = [string]$script:ResolvedPythonRuntime.Executable
+    }
     $manifest = [ordered]@{
-        schema_version = 1
-        profile        = $Profile
-        install_root   = $InstallRoot
-        source_root    = $SourceRoot
-        recorded_at    = (Get-Date).ToString('o')
-        components     = $Components
+        schema_version     = 1
+        profile            = $Profile
+        install_root       = $InstallRoot
+        source_root        = $SourceRoot
+        python_executable  = $pythonExecutable
+        recorded_at        = (Get-Date).ToString('o')
+        components         = $Components
     }
     Write-InstallManifest -Path (Join-Path $InstallRoot 'config\installed.json') -Manifest $manifest -DryRun:$DryRun
 }
@@ -203,13 +208,16 @@ function Get-MachinePreflight {
     if ($free -lt $required) {
         $errors.Add("Free disk space is $free bytes. This profile needs $required bytes.")
     }
-    $python = Find-Python312
+    $python = Find-Python312 -InstallRoot $InstallRoot
     if ($null -eq $python) {
         $facts.python = 'missing'
-        Write-InstallLog 'Python 3.12 or newer was not found.'
+        Write-InstallLog 'No compatible Python runtime is installed yet. The installer will install Python 3.12.10.'
     } else {
         $facts.python = $python.Version
         Write-InstallLog "Python: $($python.Version) at $($python.Executable)"
+        if ($python.Command) {
+            Write-InstallLog "Python command: $($python.Command)"
+        }
     }
     $ollama = Find-OllamaExecutable
     if ($null -eq $ollama) {
@@ -256,45 +264,30 @@ function Get-MachinePreflight {
 }
 
 function Install-PythonRuntime {
-    $found = Find-Python312
-    if ($null -ne $found) {
-        if ($found.Executable -like '*python_embeded*') {
+    $decision = Resolve-InstallerPython -InstallRoot $InstallRoot -InstallCommand {
+        $installer = Join-Path $InstallRoot 'cache\python-3.12.10-amd64.exe'
+        Write-InstallLog "No compatible Python runtime found. Installing pinned Python 3.12.10 from $($Pins.python.url)."
+        return (Install-PinnedPythonPackage -Pins $Pins -InstallerPath $installer -DryRun:$DryRun)
+    }
+    if ($decision.Runtime -and -not $decision.Installed) {
+        if ([string]$decision.Runtime.Executable -like '*python_embeded*') {
             return New-StageResult -Verified $false -Detail 'The only detected Python is the ComfyUI embedded interpreter.' -Facts @{}
         }
-        Write-InstallLog "Keeping Python $($found.Version)."
+        $script:ResolvedPythonRuntime = $decision.Runtime
+        Write-InstallLog "Keeping Python $($decision.Runtime.Version) at $($decision.Runtime.Executable)."
         return New-StageResult -Verified $true -Detail 'Kept the existing Python runtime.' -Facts @{
             action     = 'kept'
-            version    = $found.Version
-            executable = $found.Executable
+            version    = [string]$decision.Runtime.Version
+            executable = [string]$decision.Runtime.Executable
+            command    = [string]$decision.Runtime.Command
         }
     }
-    $installer = Join-Path $InstallRoot 'cache\python-3.12.10-amd64.exe'
-    $saved = Save-PinnedFile -Url $Pins.python.url -Destination $installer -Algorithm $Pins.python.algorithm -Checksum $Pins.python.checksum -ExpectedBytes ([int64]$Pins.python.expected_bytes) -Label 'Python 3.12.10' -DryRun:$DryRun
-    if (-not $saved) {
-        return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' }
+    if ($null -ne $decision.Result) {
+        return $decision.Result
     }
-    $signature = Test-Authenticode -Path $installer -SubjectLike $Pins.python.authenticode_subject
-    Write-InstallLog "Python installer Authenticode status $($signature.Status)."
-    if (-not $signature.Trusted) {
-        return New-StageResult -Verified $false -Detail "The Python installer signature is $($signature.Status)." -Facts @{
-            authenticode = $signature.Status
-        }
-    }
-    $proc = Start-Process -FilePath $installer -ArgumentList @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_pip=1', 'Include_test=0') -Wait -PassThru
-    if ($proc.ExitCode -ne 0) {
-        return New-StageResult -Verified $false -Detail "The Python installer exited with code $($proc.ExitCode)." -Facts @{}
-    }
-    Update-SessionPath
-    $installed = Find-Python312
-    if ($null -eq $installed -or $installed.Version -notlike '3.12.10*') {
-        return New-StageResult -Verified $false -Detail 'Python 3.12.10 was not found after the installer exited.' -Facts @{}
-    }
-    return New-StageResult -Verified $true -Detail 'Python 3.12.10 installed and the version command succeeded.' -Facts @{
-        action       = 'installed'
-        version      = $installed.Version
-        executable   = $installed.Executable
-        authenticode = $signature.Status
-        md5_verified = $true
+    $detail = "No compatible Python runtime found. Automatic installation did not return a result. Detection: $(Get-PythonDiscoveryText)"
+    return New-StageResult -Verified $false -Detail $detail -Facts @{
+        detection = (Get-PythonDiscoveryText)
     }
 }
 
@@ -695,17 +688,29 @@ function Invoke-InstallDoctor {
 }
 
 function Install-GatewaySoftware {
-    $python = Find-Python312
-    if ($null -eq $python) {
-        return New-StageResult -Verified $false -Detail 'Gateway installation needs Python 3.12 or newer.' -Facts @{}
+    $python = $null
+    if ($null -ne $script:ResolvedPythonRuntime -and $script:ResolvedPythonRuntime.Executable) {
+        $python = $script:ResolvedPythonRuntime
+    } else {
+        $python = Find-Python312 -InstallRoot $InstallRoot
     }
-    if ($python.Executable -like '*python_embeded*') {
+    if ($null -eq $python) {
+        if ($DryRun) {
+            Write-InstallLog 'Would install Python 3.12.10 and create the gateway virtual environment with that interpreter.'
+            Write-InstallLog 'Would write .env when that file is absent.'
+            return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' }
+        }
+        return New-StageResult -Verified $false -Detail 'Gateway installation needs Python 3.12 or newer. No compatible runtime was selected, so the virtual environment was not created.' -Facts @{
+            detection = (Get-PythonDiscoveryText)
+        }
+    }
+    if ([string]$python.Executable -like '*python_embeded*') {
         return New-StageResult -Verified $false -Detail 'Refusing to build the gateway virtual environment with the ComfyUI embedded interpreter.' -Facts @{}
     }
     $venvPython = Join-Path $InstallRoot 'venv\Scripts\python.exe'
     $projectVersion = Read-ProjectVersion -SourceRoot $SourceRoot
     if ($DryRun) {
-        Write-InstallLog "Would create the gateway virtual environment and install project version $projectVersion."
+        Write-InstallLog "Would create the gateway virtual environment with $($python.Executable) -m venv $(Join-Path $InstallRoot 'venv') and install project version $projectVersion."
         Write-InstallLog 'Would write .env when that file is absent.'
         return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run' }
     }
@@ -719,13 +724,29 @@ function Install-GatewaySoftware {
         )) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
-    if (-not (Test-Path -LiteralPath $venvPython)) {
-        if (Test-Path -LiteralPath (Join-Path $InstallRoot 'venv')) {
-            return New-StageResult -Verified $false -Detail 'The venv directory exists without Scripts\python.exe. It was left unchanged.' -Facts @{}
+    $plan = Get-GatewayVenvPlan -VenvPython $venvPython
+    if ($plan.Action -eq 'blocked' -or $plan.Action -eq 'invalid') {
+        return New-StageResult -Verified $false -Detail $plan.Detail -Facts @{
+            python = [string]$python.Executable
+            venv   = $venvPython
         }
-        & $python.Executable -m venv (Join-Path $InstallRoot 'venv')
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $venvPython)) {
-            return New-StageResult -Verified $false -Detail 'The gateway virtual environment was not created.' -Facts @{}
+    }
+    if ($plan.Action -eq 'create') {
+        $created = Invoke-GatewayVenvCreate -PythonExecutable ([string]$python.Executable) -VenvPython $venvPython
+        if (-not $created.Ok) {
+            return New-StageResult -Verified $false -Detail $created.Detail -Facts @{
+                python  = [string]$python.Executable
+                command = [string]$created.Command
+            }
+        }
+    } else {
+        Write-InstallLog "Reusing the gateway virtual environment at $venvPython ($($plan.Detail))."
+    }
+    $venvCheck = Test-GatewayVirtualEnvironment -VenvPython $venvPython
+    if (-not $venvCheck.Ok) {
+        return New-StageResult -Verified $false -Detail $venvCheck.Detail -Facts @{
+            python = [string]$python.Executable
+            venv   = $venvPython
         }
     }
     $venvText = @(& $venvPython -c 'import sys; sys.stdout.write(sys.executable + "\n" + sys.version.split()[0] + "\n")') -join "`n"
@@ -818,6 +839,7 @@ function Install-GatewaySoftware {
     return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{
         action              = 'ready'
         python              = $venvPython
+        base_python         = [string]$python.Executable
         project_version     = $projectVersion
         dependency_versions = @($versions)
         database            = $dbPath

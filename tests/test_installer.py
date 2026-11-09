@@ -61,7 +61,7 @@ def _scan_powershell(text: str) -> None:
             continue
         if text.startswith("@'", i) or text.startswith('@"', i):
             quote = text[i + 1]
-            marker = f"'{quote}@" if quote == "'" else f'"{quote}@'
+            marker = "'@" if quote == "'" else '"@'
             end = text.find(marker, i + 2)
             assert end != -1, "unclosed PowerShell here-string"
             i = end + len(marker)
@@ -111,8 +111,9 @@ def test_powershell_parser_when_available() -> None:
         pytest.skip(
             "PowerShell is not installed here. The installer was reviewed as text and was not parsed or executed."
         )
-    for name in SCRIPTS:
-        path = INSTALLER / name
+    paths = [INSTALLER / name for name in SCRIPTS]
+    paths.append(ROOT / "tests" / "installer_python_runtime.ps1")
+    for path in paths:
         completed = subprocess.run(
             [
                 executable,
@@ -139,6 +140,11 @@ def test_pins_name_exact_vendor_assets() -> None:
     assert pins["python"]["url"] == PINS["python_url"]
     assert pins["python"]["checksum"] == PINS["python_md5"]
     assert pins["python"]["algorithm"] == "MD5"
+    assert (
+        pins["python"]["sha256"]
+        == "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
+    )
+    assert pins["python"]["expected_bytes"] == 26964224
     assert pins["ollama"]["url"] == PINS["ollama_url"]
     assert pins["ollama"]["checksum"] == PINS["ollama_sha256"]
     assert pins["ollama"]["expected_bytes"] == 1675999728
@@ -462,3 +468,52 @@ def test_existing_env_port_and_firewall_rule_stay_together() -> None:
     assert "http://127.0.0.1:8787/health/live" not in update
     assert "Get-ConfiguredApiPort" in uninstall
     assert "qwen_3_4b_fp4_flux2.safetensors and was not reused" in install
+
+
+def test_python_runtime_discovery_and_install_contract() -> None:
+    common = _read("Common.ps1")
+    install = _read("install.ps1")
+    runtime = _between(install, "function Install-PythonRuntime", "function Install-OllamaRuntime")
+    gateway = _between(install, "function Install-GatewaySoftware", "function Invoke-StackVerification")
+    workflow = (ROOT / ".github" / "workflows" / "windows-installer.yml").read_text(encoding="utf-8")
+    cases = (ROOT / "tests" / "installer_python_runtime.ps1").read_text(encoding="utf-8")
+    cases.encode("ascii")
+    _scan_powershell(cases)
+    assert "function Find-Python312" in common
+    assert "function Test-RejectedPythonPath" in common
+    assert "WindowsApps execution alias" in common
+    assert "python_embeded" in common
+    assert "No suitable Python runtime found" in common
+    assert "-0p" in common
+    assert "-3.12" not in common
+    assert "py.exe -3" not in install
+    assert "Prefix = @('-3.12')" not in common
+    assert "TargetDir=" in common
+    assert "InstallLauncherAllUsers=0" in common
+    assert "SHA256" in common
+    assert "python_executable" in install
+    assert runtime.index("Resolve-InstallerPython") < runtime.index("python-3.12.10-amd64.exe")
+    assert "Kept the existing Python runtime." in runtime
+    assert "-m venv" in gateway
+    assert "Invoke-GatewayVenvCreate" in gateway
+    assert "py -3" not in gateway
+    assert "installer_python_runtime.ps1" in workflow
+    assert "PSVersion.Major -ne 5" in workflow
+    for name in (
+        "No Python installed",
+        "Python launcher without a runtime",
+        "Python 3.11 only",
+        "Compatible Python 3.12",
+        "Compatible Python 3.13",
+        "Python available only through an absolute path",
+        "WindowsApps execution alias",
+        "Python installation success",
+        "Python installation failure",
+        "Non-zero installer exit code",
+        "Missing pip",
+        "Failed venv creation",
+        "Existing valid venv",
+        "ComfyUI embedded Python only",
+        "Interrupted installation recovery",
+    ):
+        assert name in cases

@@ -4,9 +4,10 @@
     "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe",
     "algorithm": "MD5",
     "checksum": "5eddb0b6f12c852725de071ae681dde4",
-    "expected_bytes": 0,
+    "sha256": "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+    "expected_bytes": 26964224,
     "authenticode_subject": "Python Software Foundation",
-    "notes": "Python 3.12.10 is the last 3.12 release with an official Windows installer. Python 3.12.16 is source-only. The release page publishes MD5, not SHA-256. An existing Python 3.12 or newer is kept."
+    "notes": "Python 3.12.10 is the last 3.12 release with an official Windows installer. Python 3.12.16 is source-only. The release page publishes MD5. SHA-256 was recorded from that official amd64 file after its MD5 matched the published digest. An existing Python 3.12 or newer is kept. A missing runtime is installed per-user to %LOCALAPPDATA%/Programs/Python/Python312 and the gateway uses that python.exe."
   },
   "ollama": {
     "version": "0.40.14",

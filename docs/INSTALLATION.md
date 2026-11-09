@@ -24,7 +24,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\install.ps1 
 The installer:
 
 - Detects Windows build, architecture, NVIDIA GPU, driver version, VRAM, RAM, free disk, Python, Ollama, Git, and ports 11434, 8188, and 8787.
-- Installs Python 3.12.10 only when no Python 3.12 or newer is already present. A newer interpreter is kept.
+- Installs Python only when it cannot find a usable 64-bit interpreter at Python 3.12 or newer. A compatible interpreter is kept, including one that is not on `PATH`. The machine does not need a manual Python install.
+
+Python discovery does not treat `py.exe` or a `PATH` entry as proof that a runtime exists. It reads registered Python installations, the usual per-user and Program Files locations, a launcher inventory when `py.exe` can actually run, and real `python.exe` files outside the WindowsApps aliases. WindowsApps execution aliases are ignored. ComfyUI's `python_embeded\python.exe` is never used for the gateway. A candidate is accepted only after its version, pip, and virtual-environment creation have been checked. The absolute path is stored in `config\installed.json` as `python_executable`.
+
+When that search finds nothing, the installer downloads the pinned official `python-3.12.10-amd64.exe`, verifies the published MD5 and the recorded SHA-256, checks the Authenticode signature, and runs a per-user silent install into `%LOCALAPPDATA%\Programs\Python\Python312`. It waits for the installer process and checks the exit code. It then runs `%LOCALAPPDATA%\Programs\Python\Python312\python.exe` directly. It does not look that interpreter up through a refreshed `PATH` or through `py.exe`. An incomplete copy in that directory is repaired by rerunning the same pinned installer. If the download, checksum, exit code, or executable check fails, installation stops before the gateway virtual environment is created and the log includes the download URL, verification result, exit code, expected path, and detection output.
+
+The gateway virtual environment is created with that validated executable:
+
+```text
+<validated python.exe> -m venv <install-root>\venv
+```
+
+An existing gateway virtual environment is reused when its interpreter is Python 3.12 or newer, pip works, and it is not ComfyUI's embedded Python. ComfyUI Portable can be present while the gateway Python is installed separately.
 - Runs the pinned `OllamaSetup.exe` with an argument list after the SHA-256 and Authenticode checks. It does not run a downloaded script.
 - Extracts the pinned ComfyUI archive with Windows `tar.exe`, an already installed `7z.exe`, or a pinned `7zr.exe` downloaded only when both of those are unavailable. It records success only after `python_embeded\python.exe` and `ComfyUI\main.py` exist. That embedded interpreter is not the gateway virtual environment.
 - Resumes an interrupted download from the `.partial` file with an HTTP range request. A file is installed only after its pinned size and checksum match. An incomplete `.partial` file is not an installed model.
