@@ -155,8 +155,8 @@ if ($null -eq $ollama) {
     }
     $http = Test-HttpStatus -Url 'http://127.0.0.1:11434/api/version' -TimeoutSeconds 5
     Add-DoctorCheck -Name 'ollama-api' -Ok ($http -eq 200 -and $loopback) -Detail "HTTP $http loopback=$loopback" -Group ollama
-    $show = @(& $ollama.Executable show 'qwen3.5:4b-ctx8192' 2>&1) -join ' '
-    $profileOk = $LASTEXITCODE -eq 0 -and $show -match 'num_ctx\s+8192'
+    $show = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', 'qwen3.5:4b-ctx8192')
+    $profileOk = $show.ExitCode -eq 0 -and $show.Text -match 'num_ctx\s+8192'
     Add-DoctorCheck -Name 'ollama-profile' -Ok $profileOk -Detail 'qwen3.5:4b-ctx8192' -Group ollama
 }
 

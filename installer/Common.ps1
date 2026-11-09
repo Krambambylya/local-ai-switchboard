@@ -1691,6 +1691,53 @@ function Start-CurlTransfer {
     }
 }
 
+function Invoke-CapturedCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    # Windows PowerShell 5.1 turns a native stderr line merged with 2>&1 into a
+    # terminating NativeCommandError when ErrorActionPreference is Stop.
+    # A missing Ollama profile is an expected probe result, not an abort.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $restoreNative = $false
+    $savedNative = $null
+    if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
+        $restoreNative = $true
+        $savedNative = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        $output = & $FilePath @ArgumentList 2>&1
+        $code = 0
+        if (Test-Path -LiteralPath 'variable:LASTEXITCODE') {
+            $code = [int]$LASTEXITCODE
+        }
+        $text = (@($output) | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                [string]$_.Exception.Message
+            } else {
+                [string]$_
+            }
+        }) -join "`n"
+        $global:LASTEXITCODE = $code
+        return @{ ExitCode = $code; Text = $text }
+    } catch {
+        $code = 1
+        if (Test-Path -LiteralPath 'variable:LASTEXITCODE' -and $null -ne $LASTEXITCODE) {
+            $code = [int]$LASTEXITCODE
+        }
+        $global:LASTEXITCODE = $code
+        return @{ ExitCode = $code; Text = [string]$_.Exception.Message }
+    } finally {
+        $ErrorActionPreference = $previous
+        if ($restoreNative) {
+            $PSNativeCommandUseErrorActionPreference = $savedNative
+        }
+    }
+}
+
 function Invoke-ConsoleCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,

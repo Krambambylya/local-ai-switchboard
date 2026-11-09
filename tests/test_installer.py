@@ -452,6 +452,21 @@ def test_ollama_model_consent_is_not_bypassed() -> None:
     assert "Consent was not recorded for the unchecksummed Ollama model" in model
 
 
+def test_missing_ollama_profile_is_created_instead_of_aborting() -> None:
+    install = _read("install.ps1")
+    doctor = _read("doctor.ps1")
+    common = _read("Common.ps1")
+    model = _between(install, "function Install-OllamaModel", "function Install-ComfyModels")
+    assert "function Invoke-CapturedCommand" in common
+    assert "NativeCommandError" in common
+    assert "2>&1" not in model
+    assert "Invoke-CapturedCommand" in model
+    assert "Creating $($Pins.ollama.profile)" in model
+    assert "@('create', [string]$Pins.ollama.profile, '-f', $modelFile)" in model
+    assert "2>&1" not in doctor
+    assert "Invoke-CapturedCommand" in doctor
+
+
 def test_readiness_keeps_a_missing_workflow_out_of_gateway_health() -> None:
     doctor = _read("doctor.ps1")
     install = _read("install.ps1")

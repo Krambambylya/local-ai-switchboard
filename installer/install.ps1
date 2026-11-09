@@ -414,8 +414,8 @@ function Install-OllamaModel {
     if ($modelState -ne 'kept-different') {
         $env:OLLAMA_MODELS = $models
     }
-    $listed = @(& $ollama.Executable list) -join "`n"
-    $modelPresent = $listed -match [regex]::Escape($Pins.ollama.model)
+    $listed = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('list')
+    $modelPresent = $listed.Text -match [regex]::Escape($Pins.ollama.model)
     $checksumNote = 'The Ollama library tag has no checksum in pins.json.'
     if (-not $modelPresent) {
         $allowed = $AcceptUnchecksummedModels
@@ -432,8 +432,8 @@ function Install-OllamaModel {
         if ($LASTEXITCODE -ne 0) {
             return New-StageResult -Verified $false -Detail 'ollama pull failed.' -Facts @{ checksum_verified = $false }
         }
-        $listed = @(& $ollama.Executable list) -join "`n"
-        if ($listed -notmatch [regex]::Escape($Pins.ollama.model)) {
+        $listed = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('list')
+        if ($listed.Text -notmatch [regex]::Escape($Pins.ollama.model)) {
             return New-StageResult -Verified $false -Detail 'ollama list does not show the model after the pull.' -Facts @{ checksum_verified = $false }
         }
     }
@@ -449,15 +449,16 @@ function Install-OllamaModel {
     } else {
         Write-Utf8File -Path $modelFile -Text $modelText
     }
-    $shown = @(& $ollama.Executable show $Pins.ollama.profile 2>&1) -join "`n"
-    if ($LASTEXITCODE -ne 0) {
-        & $ollama.Executable create $Pins.ollama.profile -f $modelFile
+    $shown = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', [string]$Pins.ollama.profile)
+    if ($shown.ExitCode -ne 0) {
+        Write-InstallLog "Creating $($Pins.ollama.profile). The library model is already present."
+        Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)
         if ($LASTEXITCODE -ne 0) {
             return New-StageResult -Verified $false -Detail 'ollama create failed for the 8192-context profile.' -Facts @{ checksum_verified = $false }
         }
-        $shown = @(& $ollama.Executable show $Pins.ollama.profile 2>&1) -join "`n"
+        $shown = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', [string]$Pins.ollama.profile)
     }
-    if ($LASTEXITCODE -ne 0 -or $shown -notmatch 'num_ctx\s+8192') {
+    if ($shown.ExitCode -ne 0 -or $shown.Text -notmatch 'num_ctx\s+8192') {
         return New-StageResult -Verified $false -Detail 'ollama show did not report num_ctx 8192 for the profile.' -Facts @{ checksum_verified = $false }
     }
     return New-StageResult -Verified $true -Detail 'The Ollama model is listed and the 8192-context profile is present. The library tag checksum was not published in pins.json.' -Facts @{
