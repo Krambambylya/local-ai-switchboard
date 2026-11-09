@@ -1467,10 +1467,36 @@ function Restore-FileLength {
 
 function ConvertTo-ProcessArgument {
     param([Parameter(Mandatory = $true)][string]$Argument)
-    if ($Argument -notmatch '[\s"]') {
+    if ($Argument -notmatch '[\s"()]') {
         return $Argument
     }
     return '"' + ($Argument -replace '"', '""') + '"'
+}
+
+function Start-ElevatedPowerShell {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $quoted = @(foreach ($argument in $ArgumentList) { ConvertTo-ProcessArgument -Argument $argument })
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $shell
+    $startInfo.Arguments = ($quoted -join ' ')
+    $startInfo.UseShellExecute = $true
+    $startInfo.Verb = 'runas'
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw 'The elevated PowerShell process did not start.'
+    }
+    # Verb runas leaves ExitCode empty unless the handle is kept until the process ends.
+    $null = $process.Handle
+    $null = $process.WaitForExit()
+    $process.Refresh()
+    if ($null -eq $process.ExitCode) {
+        return 1
+    }
+    return [int]$process.ExitCode
 }
 
 function Format-TransferSize {

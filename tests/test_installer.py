@@ -412,7 +412,13 @@ def test_firewall_rule_stays_private_and_local_subnet() -> None:
     assert "-LocalPort $ApiPort" in rule
     assert "8787" in install
     assert "needs-admin" in common
+    assert "function Start-ElevatedPowerShell" in common
+    assert "Verb = 'runas'" in common
+    assert r'[\s"()]' in common
     assert "FirewallOnly" in install
+    assert "Start-ElevatedPowerShell -ArgumentList $arguments" in install
+    assert "Start-Process -FilePath $shell -ArgumentList $arguments -Verb RunAs" not in install
+    assert "Start-ElevatedPowerShell -ArgumentList $arguments" in _read("uninstall.ps1")
     assert "portproxy" not in _all_text().lower()
     assert common.count("New-NetFirewallRule") == 1
 

@@ -61,15 +61,14 @@ try {
     if ($DryRun) {
         throw
     }
-    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
         '-RemoveFirewallOnly', '-InstallRoot', $InstallRoot
     )
     try {
-        $elevated = Start-Process -FilePath $shell -ArgumentList $arguments -Verb RunAs -Wait -PassThru
-        if ($elevated.ExitCode -ne 0) {
-            Write-InstallLog 'The firewall rule was not removed.' 'ERROR'
+        $elevatedCode = Start-ElevatedPowerShell -ArgumentList $arguments
+        if ($elevatedCode -ne 0) {
+            Write-InstallLog "The elevated firewall removal exited $elevatedCode." 'ERROR'
             exit 1
         }
     } catch {

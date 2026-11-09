@@ -1024,7 +1024,6 @@ if ($SkipFirewall) {
 } else {
     $firewallResult = Install-GatewayFirewall -ApiPort $ApiPort -DryRun:$DryRun
     if (-not $firewallResult.Verified -and $firewallResult.Facts.ContainsKey('action') -and $firewallResult.Facts.action -eq 'needs-admin') {
-        $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $arguments = @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
             '-FirewallOnly', '-InstallRoot', $InstallRoot, '-ApiPort', "$ApiPort"
@@ -1033,9 +1032,15 @@ if ($SkipFirewall) {
             $arguments += '-WhatIf'
         }
         try {
-            $elevated = Start-Process -FilePath $shell -ArgumentList $arguments -Verb RunAs -Wait -PassThru
-            if ($elevated.ExitCode -eq 0) {
-                $firewallResult = Install-GatewayFirewall -ApiPort $ApiPort -DryRun:$DryRun
+            Write-InstallLog 'Windows is asking for administrator approval to add the firewall rule.'
+            $elevatedCode = Start-ElevatedPowerShell -ArgumentList $arguments
+            Write-InstallLog "The elevated firewall step exited $elevatedCode."
+            $firewallResult = Install-GatewayFirewall -ApiPort $ApiPort -DryRun:$DryRun
+            if (-not $firewallResult.Verified -and $firewallResult.Facts.ContainsKey('action') -and $firewallResult.Facts.action -eq 'needs-admin') {
+                $firewallResult = New-StageResult -Verified $false -Detail "The elevated firewall installer exited $elevatedCode and the rule is still absent." -Facts @{
+                    action    = 'elevated-failed'
+                    exit_code = $elevatedCode
+                }
             }
         } catch {
             Write-InstallLog 'The firewall approval prompt was dismissed.' 'ERROR'
