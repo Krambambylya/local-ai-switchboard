@@ -427,7 +427,8 @@ function Install-OllamaModel {
                 checksum_verified = $false
             }
         }
-        & $ollama.Executable pull $Pins.ollama.model
+        Write-InstallLog "Downloading $($Pins.ollama.model)."
+        Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('pull', [string]$Pins.ollama.model)
         if ($LASTEXITCODE -ne 0) {
             return New-StageResult -Verified $false -Detail 'ollama pull failed.' -Facts @{ checksum_verified = $false }
         }
@@ -762,7 +763,7 @@ function Install-GatewaySoftware {
         }
     }
     if ($needsInstall) {
-        & $venvPython -m pip install --disable-pip-version-check --no-input $SourceRoot
+        Invoke-PipInstall -Python $venvPython -SourceRoot $SourceRoot
         if ($LASTEXITCODE -ne 0) {
             return New-StageResult -Verified $false -Detail 'pip could not install the gateway project.' -Facts @{}
         }

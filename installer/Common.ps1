@@ -7,6 +7,8 @@ $script:InstallerDirectory = $PSScriptRoot
 $script:LogPath = $null
 $script:ResolvedPythonRuntime = $null
 $script:PythonDiscoveryLog = $null
+$script:TransferProgressAt = [datetime]::MinValue
+$script:TransferProgressWidth = 0
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -1463,12 +1465,261 @@ function Restore-FileLength {
     }
 }
 
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Argument)
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+    return '"' + ($Argument -replace '"', '""') + '"'
+}
+
+function Format-TransferSize {
+    param([Parameter(Mandatory = $true)][int64]$Bytes)
+    $absolute = $Bytes
+    if ($absolute -lt 0) {
+        $absolute = [int64]0
+    }
+    $units = @('B', 'KB', 'MB', 'GB', 'TB')
+    $value = [double]$absolute
+    $unit = 0
+    while ($value -ge 1024 -and $unit -lt 4) {
+        $value = $value / 1024
+        $unit++
+    }
+    if ($unit -eq 0) {
+        return ('{0} B' -f $absolute)
+    }
+    return ('{0:0.00} {1}' -f $value, $units[$unit])
+}
+
+function Format-TransferEta {
+    param([Parameter(Mandatory = $true)][int]$Seconds)
+    if ($Seconds -lt 0) {
+        return 'unknown'
+    }
+    if ($Seconds -ge 3600) {
+        $hours = [int][Math]::Floor($Seconds / 3600)
+        $minutes = [int][Math]::Floor(($Seconds % 3600) / 60)
+        return ('{0}h {1}m' -f $hours, $minutes)
+    }
+    if ($Seconds -ge 60) {
+        $minutes = [int][Math]::Floor($Seconds / 60)
+        $rest = $Seconds % 60
+        return ('{0}m {1}s' -f $minutes, $rest)
+    }
+    return ('{0}s' -f $Seconds)
+}
+
+function Write-TransferProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Activity,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int64]$Current,
+        [int64]$Total = 0,
+        [int64]$SessionStart = 0,
+        [Parameter(Mandatory = $true)][datetime]$Started,
+        [switch]$Done
+    )
+    $now = Get-Date
+    if (-not $Done -and ($now - $script:TransferProgressAt).TotalMilliseconds -lt 250) {
+        return
+    }
+    $script:TransferProgressAt = $now
+    $shown = $Current
+    if ($shown -lt 0) {
+        $shown = [int64]0
+    }
+    $percent = -1
+    if ($Total -gt 0) {
+        if ($shown -gt $Total) {
+            $shown = $Total
+        }
+        $percent = [int][Math]::Floor((100.0 * $shown) / $Total)
+        if ($percent -gt 100) {
+            $percent = 100
+        }
+    }
+    if ($Done -and $Total -gt 0 -and $Current -ge $Total) {
+        $percent = 100
+        $shown = $Total
+    }
+    $barWidth = 16
+    $filled = 0
+    if ($percent -ge 0) {
+        $filled = [int](($barWidth * $percent) / 100)
+    }
+    $bar = ('#' * $filled).PadRight($barWidth, '.')
+    $elapsed = ($now - $Started).TotalSeconds
+    if ($elapsed -lt 0.001) {
+        $elapsed = 0.001
+    }
+    $gained = $Current - $SessionStart
+    if ($gained -lt 0) {
+        $gained = [int64]0
+    }
+    $rate = $gained / $elapsed
+    $leftBytes = [int64]-1
+    $eta = -1
+    if ($Total -gt 0) {
+        $leftBytes = $Total - $shown
+        if ($leftBytes -lt 0) {
+            $leftBytes = [int64]0
+        }
+        if ($rate -ge 1) {
+            $etaValue = $leftBytes / $rate
+            if ($etaValue -gt 8640000) {
+                $etaValue = 8640000
+            }
+            $eta = [int]$etaValue
+        }
+        if ($Done -and $percent -eq 100) {
+            $leftBytes = [int64]0
+            $eta = 0
+        }
+    }
+    $pctText = if ($percent -ge 0) { '{0,3}%' -f $percent } else { '  ?%' }
+    $amount = if ($Total -gt 0) {
+        '{0} / {1}' -f (Format-TransferSize $shown), (Format-TransferSize $Total)
+    } else {
+        Format-TransferSize $shown
+    }
+    $leftText = if ($leftBytes -ge 0) { 'left {0}' -f (Format-TransferSize $leftBytes) } else { 'left unknown' }
+    $speedText = '{0}/s' -f (Format-TransferSize ([int64][Math]::Round($rate)))
+    $etaText = 'ETA {0}' -f (Format-TransferEta $eta)
+    $name = $Label
+    $maxColumns = 120
+    try {
+        $windowWidth = [int]$Host.UI.RawUI.WindowSize.Width
+        if ($windowWidth -gt 40) {
+            $maxColumns = $windowWidth - 1
+        }
+    } catch {
+        $maxColumns = 120
+    }
+    $core = '{0} [{1}] {2}  {3}  {4}  {5}  {6}' -f $Activity, $bar, $pctText, $leftText, $amount, $speedText, $etaText
+    if ($core.Length -gt $maxColumns) {
+        $line = $core.Substring(0, $maxColumns)
+    } elseif ($name.Length -gt 0 -and ($core.Length + 2 + $name.Length) -le $maxColumns) {
+        $line = $core + '  ' + $name
+    } elseif ($name.Length -gt 0 -and ($maxColumns - $core.Length) -ge 6) {
+        $room = $maxColumns - $core.Length - 2
+        $line = $core + '  ' + $name.Substring(0, $room - 3) + '...'
+    } else {
+        $line = $core
+    }
+    if ($script:TransferProgressWidth -gt $maxColumns) {
+        $script:TransferProgressWidth = $maxColumns
+    }
+    if ($line.Length -lt $script:TransferProgressWidth) {
+        $line = $line.PadRight($script:TransferProgressWidth)
+    }
+    $script:TransferProgressWidth = $line.TrimEnd().Length
+    Write-Host ("`r" + $line) -NoNewline
+    $status = '{0}  {1}  {2}  {3}' -f $amount, $leftText, $speedText, $etaText
+    if ($percent -ge 0 -and $eta -ge 0) {
+        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status -PercentComplete $percent -SecondsRemaining $eta
+    } elseif ($percent -ge 0) {
+        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status -PercentComplete $percent
+    } else {
+        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status
+    }
+    if ($Done) {
+        Write-Host ''
+        Write-Progress -Id 1 -Activity "$Activity $name" -Completed
+        $script:TransferProgressWidth = 0
+        $script:TransferProgressAt = [datetime]::MinValue
+    }
+}
+
+function Get-TransferLength {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int64]$Fallback = 0
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $Fallback
+    }
+    try {
+        return [int64](Get-Item -LiteralPath $Path).Length
+    } catch {
+        return $Fallback
+    }
+}
+
+function Wait-TransferProcess {
+    param(
+        [Parameter(Mandatory = $true)]$Process,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int64]$ExpectedBytes = 0,
+        [int64]$SessionStart = 0
+    )
+    $started = Get-Date
+    try {
+        while (-not $Process.HasExited) {
+            $current = Get-TransferLength -Path $Path -Fallback $SessionStart
+            Write-TransferProgress -Activity 'Downloading' -Label $Label -Current $current -Total $ExpectedBytes -SessionStart $SessionStart -Started $started
+            Start-Sleep -Milliseconds 250
+        }
+    } finally {
+        [void]$Process.WaitForExit()
+        $current = Get-TransferLength -Path $Path -Fallback $SessionStart
+        Write-TransferProgress -Activity 'Downloading' -Label $Label -Current $current -Total $ExpectedBytes -SessionStart $SessionStart -Started $started -Done
+    }
+}
+
+function Start-CurlTransfer {
+    param(
+        [Parameter(Mandatory = $true)][string]$CurlPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $quoted = @(foreach ($argument in $Arguments) { ConvertTo-ProcessArgument -Argument $argument })
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $CurlPath
+    $startInfo.Arguments = ($quoted -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    return @{
+        Process = $process
+        Stdout  = $process.StandardOutput.ReadToEndAsync()
+        Stderr  = $process.StandardError.ReadToEndAsync()
+    }
+}
+
+function Invoke-ConsoleCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    $quoted = @(foreach ($argument in $ArgumentList) { ConvertTo-ProcessArgument -Argument $argument })
+    $process = Start-Process -FilePath $FilePath -ArgumentList $quoted -NoNewWindow -Wait -PassThru
+    $global:LASTEXITCODE = [int]$process.ExitCode
+    return $global:LASTEXITCODE
+}
+
+function Invoke-PipInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$Python,
+        [Parameter(Mandatory = $true)][string]$SourceRoot
+    )
+    Write-InstallLog 'Installing the gateway package.'
+    return (Invoke-ConsoleCommand -FilePath $Python -ArgumentList @(
+            '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'on', $SourceRoot
+        ))
+}
+
 function Receive-PinnedHttpFile {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$Destination,
         [switch]$Resume,
-        [int64]$ExpectedBytes = 0
+        [int64]$ExpectedBytes = 0,
+        [string]$Label = ''
     )
     $startLength = [int64]0
     if ($Resume -and (Test-Path -LiteralPath $Destination)) {
@@ -1504,15 +1755,45 @@ function Receive-PinnedHttpFile {
         if ($startLength -gt 0 -and $statusCode -eq 206) {
             $mode = [System.IO.FileMode]::Append
         }
+        if ([string]::IsNullOrWhiteSpace($Label)) {
+            $Label = [string](Split-Path -Leaf $Destination)
+        }
+        $total = $ExpectedBytes
+        $responseLength = [int64]$response.ContentLength
+        if ($total -le 0 -and $responseLength -gt 0) {
+            if ($startLength -gt 0 -and $statusCode -eq 206) {
+                $total = $startLength + $responseLength
+            } else {
+                $total = $responseLength
+            }
+        }
         $inputStream = $response.GetResponseStream()
         $outputStream = [System.IO.File]::Open($Destination, $mode, [System.IO.FileAccess]::Write)
+        $copied = $startLength
+        $started = Get-Date
+        $failed = $false
         try {
-            $inputStream.CopyTo($outputStream)
+            $buffer = New-Object byte[] 65536
+            $sinceFlush = 0
+            while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $outputStream.Write($buffer, 0, $read)
+                $copied += [int64]$read
+                $sinceFlush += $read
+                if ($sinceFlush -ge 4194304) {
+                    $outputStream.Flush()
+                    $sinceFlush = 0
+                }
+                Write-TransferProgress -Activity 'Downloading' -Label $Label -Current $copied -Total $total -SessionStart $startLength -Started $started
+            }
         } catch {
-            return @{ Complete = $false; RangeRejected = $false; StartLength = $startLength }
+            $failed = $true
         } finally {
+            Write-TransferProgress -Activity 'Downloading' -Label $Label -Current $copied -Total $total -SessionStart $startLength -Started $started -Done
             $outputStream.Close()
             $inputStream.Close()
+        }
+        if ($failed) {
+            return @{ Complete = $false; RangeRejected = $false; StartLength = $startLength }
         }
     } finally {
         if ($response) {
@@ -1534,15 +1815,19 @@ function Invoke-PinnedTransfer {
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$Destination,
         [switch]$Resume,
-        [int64]$ExpectedBytes = 0
+        [int64]$ExpectedBytes = 0,
+        [string]$Label = ''
     )
     $startLength = [int64]0
     if ($Resume -and (Test-Path -LiteralPath $Destination)) {
         $startLength = [int64](Get-Item -LiteralPath $Destination).Length
     }
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        $Label = [string](Split-Path -Leaf $Destination)
+    }
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if (-not $curl) {
-        return (Receive-PinnedHttpFile -Url $Url -Destination $Destination -Resume:$Resume -ExpectedBytes $ExpectedBytes)
+        return (Receive-PinnedHttpFile -Url $Url -Destination $Destination -Resume:$Resume -ExpectedBytes $ExpectedBytes -Label $Label)
     }
     $argumentList = @(
         '--fail', '--location', '--retry', '3', '--retry-delay', '2',
@@ -1552,9 +1837,25 @@ function Invoke-PinnedTransfer {
         $argumentList += @('--continue-at', '-')
     }
     $argumentList += $Url
-    $output = & curl.exe @argumentList 2>&1
-    $code = $LASTEXITCODE
-    $text = (@($output) | ForEach-Object { [string]$_ }) -join "`n"
+    # curl stays quiet so PowerShell does not swallow its meter. The bar below
+    # shows percent, remaining size, speed, and ETA while the file grows.
+    $transfer = Start-CurlTransfer -CurlPath $curl.Source -Arguments $argumentList
+    try {
+        Wait-TransferProcess -Process $transfer.Process -Path $Destination -Label $Label -ExpectedBytes $ExpectedBytes -SessionStart $startLength
+        $code = [int]$transfer.Process.ExitCode
+        $text = ''
+        try {
+            $text = [string]$transfer.Stderr.Result
+        } catch {
+            $text = ''
+        }
+        try {
+            [void][string]$transfer.Stdout.Result
+        } catch {
+        }
+    } finally {
+        $transfer.Process.Dispose()
+    }
     $rangeRejected = $code -eq 33 -or $text -match '(?i)(byte ranges|416)'
     if ($rangeRejected) {
         if ($startLength -gt 0) {
@@ -1589,7 +1890,7 @@ function Save-ReplacementDownload {
     if (Test-Path -LiteralPath $replacement) {
         Remove-Item -LiteralPath $replacement -Force
     }
-    $second = Invoke-PinnedTransfer -Url $Url -Destination $replacement -ExpectedBytes $ExpectedBytes
+    $second = Invoke-PinnedTransfer -Url $Url -Destination $replacement -ExpectedBytes $ExpectedBytes -Label $Label
     if (-not $second.Complete) {
         if (Test-Path -LiteralPath $replacement) {
             Remove-Item -LiteralPath $replacement -Force -ErrorAction SilentlyContinue
@@ -1648,11 +1949,19 @@ function Save-PinnedFile {
     $resume = Test-Path -LiteralPath $partial
     if ($resume) {
         $resumeLength = [int64](Get-Item -LiteralPath $partial).Length
-        Write-InstallLog "Resuming $Label from $resumeLength bytes with an HTTP range request."
+        $remainingText = ''
+        if ($ExpectedBytes -gt $resumeLength) {
+            $remainingText = ' ' + (Format-TransferSize -Bytes ($ExpectedBytes - $resumeLength)) + ' left.'
+        }
+        Write-InstallLog "Resuming $Label from $resumeLength bytes with an HTTP range request.$remainingText"
     } else {
-        Write-InstallLog "Downloading $Label from $Url"
+        $sizeText = ''
+        if ($ExpectedBytes -gt 0) {
+            $sizeText = ' (' + (Format-TransferSize -Bytes $ExpectedBytes) + ')'
+        }
+        Write-InstallLog "Downloading $Label$sizeText from $Url"
     }
-    $transfer = Invoke-PinnedTransfer -Url $Url -Destination $partial -Resume:$resume -ExpectedBytes $ExpectedBytes
+    $transfer = Invoke-PinnedTransfer -Url $Url -Destination $partial -Resume:$resume -ExpectedBytes $ExpectedBytes -Label $Label
     if ($transfer.RangeRejected) {
         Write-InstallLog "The server did not honor a ranged resume for $Label. The partial file was kept."
         return (Save-ReplacementDownload -Url $Url -Partial $partial -Destination $Destination -Algorithm $Algorithm -Checksum $expected -ExpectedBytes $ExpectedBytes -Label $Label)
@@ -1674,6 +1983,46 @@ function Save-PinnedFile {
     return $true
 }
 
+function Get-StreamHash {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Algorithm,
+        [Parameter(Mandatory = $true)][int64]$Length
+    )
+    switch ($Algorithm.ToUpperInvariant()) {
+        'SHA256' { $hasher = [System.Security.Cryptography.SHA256]::Create() }
+        'SHA384' { $hasher = [System.Security.Cryptography.SHA384]::Create() }
+        'SHA512' { $hasher = [System.Security.Cryptography.SHA512]::Create() }
+        'SHA1' { $hasher = [System.Security.Cryptography.SHA1]::Create() }
+        'MD5' { $hasher = [System.Security.Cryptography.MD5]::Create() }
+        default { $hasher = $null }
+    }
+    if ($null -eq $hasher) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash.ToLowerInvariant()
+    }
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $buffer = New-Object byte[] 8388608
+    $readTotal = [int64]0
+    $started = Get-Date
+    $label = [string](Split-Path -Leaf $Path)
+    $hashText = ''
+    try {
+        while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            [void]$hasher.TransformBlock($buffer, 0, $count, $buffer, 0)
+            $readTotal += [int64]$count
+            Write-TransferProgress -Activity 'Verifying' -Label $label -Current $readTotal -Total $Length -Started $started
+        }
+        $empty = New-Object byte[] 0
+        [void]$hasher.TransformFinalBlock($empty, 0, 0)
+        $hashText = (([System.BitConverter]::ToString($hasher.Hash) -replace '-', '').ToLowerInvariant())
+    } finally {
+        Write-TransferProgress -Activity 'Verifying' -Label $label -Current $readTotal -Total $Length -Started $started -Done
+        $stream.Close()
+        $hasher.Dispose()
+    }
+    return $hashText
+}
+
 function Test-PinnedFileHash {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1686,7 +2035,11 @@ function Test-PinnedFileHash {
         Write-InstallLog "$Path is $([int64]$item.Length) bytes. The pin expects $ExpectedBytes bytes." 'ERROR'
         return $false
     }
-    $hash = (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash.ToLowerInvariant()
+    if ([int64]$item.Length -ge 32MB) {
+        $hash = Get-StreamHash -Path $Path -Algorithm $Algorithm -Length ([int64]$item.Length)
+    } else {
+        $hash = (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash.ToLowerInvariant()
+    }
     if ($hash -ne $Checksum.ToLowerInvariant()) {
         Write-InstallLog "Checksum mismatch for $Path." 'ERROR'
         return $false

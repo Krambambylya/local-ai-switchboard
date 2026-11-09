@@ -71,7 +71,7 @@ $wasRunning = (Test-HttpStatus -Url "http://127.0.0.1:$apiPort/health/live" -Tim
 if ($wasRunning) {
     & (Join-Path $PSScriptRoot 'stop.ps1') -InstallRoot $InstallRoot
 }
-& $python -m pip install --disable-pip-version-check --no-input $SourceRoot
+Invoke-PipInstall -Python $python -SourceRoot $SourceRoot
 if ($LASTEXITCODE -ne 0) {
     Write-InstallLog 'pip could not install the source tree.' 'ERROR'
     exit 1

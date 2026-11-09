@@ -307,6 +307,27 @@ def test_existing_ollama_and_comfyui_are_kept() -> None:
     assert "Find-ComfyPortableRoot" in comfy
 
 
+def test_downloads_show_remaining_progress() -> None:
+    common = _read("Common.ps1")
+    install = _read("install.ps1")
+    update = _read("update.ps1")
+    assert "function Write-TransferProgress" in common
+    assert "left " in common
+    assert "ETA " in common
+    assert "SecondsRemaining" in common
+    receive = _between(common, "function Receive-PinnedHttpFile", "function Invoke-PinnedTransfer")
+    transfer = _between(common, "function Invoke-PinnedTransfer", "function Save-ReplacementDownload")
+    assert "Write-TransferProgress" in receive
+    assert "Wait-TransferProcess" in transfer
+    assert "--continue-at" in transfer
+    ollama = _between(install, "function Install-OllamaModel", "function Install-ComfyModels")
+    assert "Invoke-ConsoleCommand" in ollama
+    assert "pull" in ollama
+    assert "Invoke-PipInstall" in install
+    assert "Invoke-PipInstall" in update
+    assert "--progress-bar" in common
+
+
 def test_interrupted_download_keeps_partial_and_uses_http_range() -> None:
     common = _read("Common.ps1")
     assert "--continue-at" in common
