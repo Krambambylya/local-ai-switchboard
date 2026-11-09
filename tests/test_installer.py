@@ -486,6 +486,11 @@ def test_python_runtime_discovery_and_install_contract() -> None:
     assert "No suitable Python runtime found" in common
     assert "-0p" in common
     assert "-3.12" not in common
+    assert "-c $code" not in common
+    assert 'metadata.version("local-ai-switchboard")' not in _all_text()
+    assert 'sys.stdout.write("LAS_WORKFLOW' not in common
+    assert "las-python-probe-" in common
+    assert re.search(r"(?im)^[ \t]*\$probeCommand\s*=", common) is None
     assert "py.exe -3" not in install
     assert "Prefix = @('-3.12')" not in common
     assert "TargetDir=" in common

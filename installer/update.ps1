@@ -49,7 +49,7 @@ if (-not (Test-Path -LiteralPath $python)) {
     exit 1
 }
 $sourceVersion = Read-ProjectVersion -SourceRoot $SourceRoot
-$installedOutput = @(& $python -c 'import importlib.metadata as metadata; print(metadata.version("local-ai-switchboard"))')
+$installedOutput = @(& $python -c 'import importlib.metadata as metadata; print(metadata.version(''local-ai-switchboard''))')
 if ($LASTEXITCODE -ne 0) {
     Write-InstallLog 'The installed gateway version could not be read.' 'ERROR'
     exit 1
@@ -76,7 +76,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-InstallLog 'pip could not install the source tree.' 'ERROR'
     exit 1
 }
-$updatedOutput = @(& $python -c 'import importlib.metadata as metadata; print(metadata.version("local-ai-switchboard"))')
+$updatedOutput = @(& $python -c 'import importlib.metadata as metadata; print(metadata.version(''local-ai-switchboard''))')
 if ($LASTEXITCODE -ne 0) {
     Write-InstallLog 'The gateway package could not be imported after the update.' 'ERROR'
     exit 1

@@ -188,7 +188,7 @@ if ($profileName -eq 'Design') {
 
 $venvPython = Join-Path $InstallRoot 'venv\Scripts\python.exe'
 if (Test-Path -LiteralPath $venvPython) {
-    $imported = & $venvPython -c 'import importlib.metadata as metadata; print(metadata.version("local-ai-switchboard"))'
+    $imported = & $venvPython -c 'import importlib.metadata as metadata; print(metadata.version(''local-ai-switchboard''))'
     Add-DoctorCheck -Name 'gateway-package' -Ok ($LASTEXITCODE -eq 0) -Detail ((@($imported) -join ' ').Trim()) -Group gateway
 } else {
     Add-DoctorCheck -Name 'gateway-package' -Ok $false -Detail 'The gateway virtual environment is missing.' -Group gateway

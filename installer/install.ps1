@@ -749,11 +749,11 @@ function Install-GatewaySoftware {
             venv   = $venvPython
         }
     }
-    $venvText = @(& $venvPython -c 'import sys; sys.stdout.write(sys.executable + "\n" + sys.version.split()[0] + "\n")') -join "`n"
+    $venvText = @(& $venvPython -c 'import sys; sys.stdout.write(sys.executable + chr(10) + sys.version.split()[0] + chr(10))') -join "`n"
     if ($LASTEXITCODE -ne 0 -or $venvText -like '*python_embeded*') {
         return New-StageResult -Verified $false -Detail 'The gateway interpreter check failed.' -Facts @{}
     }
-    $probe = & $venvPython -c 'import importlib.metadata as metadata; print(metadata.version("local-ai-switchboard"))' 2>$null
+    $probe = & $venvPython -c 'import importlib.metadata as metadata; print(metadata.version(''local-ai-switchboard''))' 2>$null
     $needsInstall = $LASTEXITCODE -ne 0
     if (-not $needsInstall) {
         $installedVersion = [string]@($probe)[-1]
@@ -767,7 +767,7 @@ function Install-GatewaySoftware {
             return New-StageResult -Verified $false -Detail 'pip could not install the gateway project.' -Facts @{}
         }
     }
-    $versionCode = 'import importlib.metadata as metadata; names=("local-ai-switchboard","fastapi","httpx","pydantic-settings","uvicorn"); print("\n".join(name + "==" + metadata.version(name) for name in names))'
+    $versionCode = 'import importlib.metadata as metadata; names=(''local-ai-switchboard'',''fastapi'',''httpx'',''pydantic-settings'',''uvicorn''); print(chr(10).join(name + ''=='' + metadata.version(name) for name in names))'
     $versions = @(& $venvPython -c $versionCode)
     if ($LASTEXITCODE -ne 0 -or $versions.Count -lt 5) {
         return New-StageResult -Verified $false -Detail 'The gateway dependencies could not be imported after installation.' -Facts @{}

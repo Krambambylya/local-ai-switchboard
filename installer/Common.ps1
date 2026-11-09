@@ -628,7 +628,9 @@ function Invoke-PythonRuntimeProbe {
         [scriptblock]$ProbeCommand,
         [switch]$SkipVenvProbe
     )
-    $command = "$Executable -c <version, pip, venv>"
+    # Windows PowerShell 5.1 strips double quotes from a native argument, so
+    # python.exe -c receives invalid Python. The probe is a temporary file.
+    $command = "$Executable <runtime probe>"
     if ($ProbeCommand) {
         $result = & $ProbeCommand $Executable ([bool]$SkipVenvProbe)
         if ($null -eq $result) {
@@ -661,13 +663,18 @@ sys.stdout.write("LAS_VENV=" + state + "\n")
     $ErrorActionPreference = 'Continue'
     $restoreNative = $false
     $savedNative = $null
+    $probeFile = $null
     if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
         $restoreNative = $true
         $savedNative = $PSNativeCommandUseErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $false
     }
     try {
-        $output = & $Executable -c $code 2>&1
+        $probeFile = Join-Path ([System.IO.Path]::GetTempPath()) ('las-python-probe-' + [guid]::NewGuid().ToString('n') + '.py')
+        $command = "$Executable $probeFile"
+        $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
+        [System.IO.File]::WriteAllText($probeFile, $code, $utf8)
+        $output = & $Executable $probeFile 2>&1
         $exitCode = $LASTEXITCODE
         $text = Limit-DiscoveryText -Text ((@($output) | ForEach-Object { [string]$_ }) -join "`n") -Limit 2000
         if ($exitCode -ne 0 -or $text -match 'No suitable Python runtime found') {
@@ -837,6 +844,9 @@ sys.stdout.write("LAS_VENV=" + state + "\n")
             ErrorOutput = [string]$_.Exception.Message
         }
     } finally {
+        if ($probeFile -and (Test-Path -LiteralPath $probeFile)) {
+            Remove-Item -LiteralPath $probeFile -Force -ErrorAction SilentlyContinue
+        }
         $ErrorActionPreference = $previous
         if ($restoreNative) {
             $PSNativeCommandUseErrorActionPreference = $savedNative
@@ -910,7 +920,7 @@ function Find-Python312 {
             Write-PythonDiscovery "Skipping Python candidate: $candidate. Reason: $reason. It was not executed."
             continue
         }
-        $probeCommandText = "$candidate -c <version, pip, venv>"
+        $probeCommandText = "$candidate <runtime probe>"
         Write-PythonDiscovery "Probing Python candidate: $candidate. Command: $probeCommandText"
         try {
             $probe = Invoke-PythonRuntimeProbe -Executable $candidate -ProbeCommand $ProbeCommand -SkipVenvProbe:$SkipVenvProbe
@@ -1177,14 +1187,18 @@ function Complete-PinnedPythonInstall {
         }
         return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $DownloadUrl -ChecksumVerified $ChecksumVerified -ChecksumAlgorithm $ChecksumAlgorithm -ExitCode $exitCode -ExpectedExecutable $ExpectedExecutable -Detection $detection -ErrorOutput $detection -Authenticode $Authenticode -Sha256 $Sha256 -Extra @{ attempts = $attemptText; checksum = $Checksum }))
     }
-    $probe = Invoke-PythonRuntimeProbe -Executable $ExpectedExecutable -ProbeCommand $ProbeCommand
+    if ($ProbeCommand) {
+        $probe = Invoke-PythonRuntimeProbe -Executable $ExpectedExecutable -ProbeCommand $ProbeCommand
+    } else {
+        $probe = Invoke-PythonRuntimeProbe -Executable $ExpectedExecutable
+    }
     $probeOk = [bool](Get-ObjectProperty -Object $probe -Name 'Ok')
     $probeVersion = [string](Get-ObjectProperty -Object $probe -Name 'Version')
     $probeExecutable = [string](Get-ObjectProperty -Object $probe -Name 'Executable')
-    $probeCommand = [string](Get-ObjectProperty -Object $probe -Name 'Command')
+    $shownProbeCommand = [string](Get-ObjectProperty -Object $probe -Name 'Command')
     $probeReason = [string](Get-ObjectProperty -Object $probe -Name 'Reason')
     $probeError = [string](Get-ObjectProperty -Object $probe -Name 'ErrorOutput')
-    $actual = "version $($probeVersion) at $probeExecutable. Reason: $probeReason. Command: $probeCommand. Output: $(Limit-DiscoveryText -Text $probeError)"
+    $actual = "version $($probeVersion) at $probeExecutable. Reason: $probeReason. Command: $shownProbeCommand. Output: $(Limit-DiscoveryText -Text $probeError)"
     if (-not $probeOk -or $probeVersion -notlike '3.12.10*') {
         $detail = "No compatible Python runtime found. Automatic installation failed with exit code $exitCode. The executable at $ExpectedExecutable failed validation ($actual). Download: $DownloadUrl. Download verification: $checksumText. Expected executable: $ExpectedExecutable."
         return (New-StageResult -Verified $false -Detail $detail -Facts (New-PythonInstallFacts -DownloadUrl $DownloadUrl -ChecksumVerified $ChecksumVerified -ChecksumAlgorithm $ChecksumAlgorithm -ExitCode $exitCode -ExpectedExecutable $ExpectedExecutable -Detection $actual -ErrorOutput $probeError -Authenticode $Authenticode -Sha256 $Sha256 -Extra @{ attempts = $attemptText }))
@@ -1200,7 +1214,7 @@ function Complete-PinnedPythonInstall {
     $script:ResolvedPythonRuntime = @{
         Version    = $probeVersion
         Executable = $probeExecutable
-        Command    = $probeCommand
+        Command    = $shownProbeCommand
         Pip        = $true
         Venv       = $true
     }
@@ -1208,12 +1222,12 @@ function Complete-PinnedPythonInstall {
     if ($repair) {
         $action = 'repaired'
     }
-    Write-InstallLog "Python version command: $probeCommand reported $probeVersion."
+    Write-InstallLog "Python version command: $shownProbeCommand reported $probeVersion."
     return (New-StageResult -Verified $true -Detail 'Python 3.12.10 installed and the version command succeeded.' -Facts @{
             action              = $action
             version             = $probeVersion
             executable          = $probeExecutable
-            command             = $probeCommand
+            command             = $shownProbeCommand
             authenticode        = $Authenticode
             md5_verified        = $true
             sha256              = $Sha256
@@ -1774,9 +1788,9 @@ function Get-WorkflowCheckerCode {
         'from local_ai_switchboard.providers.workflows import load_manifest'
         ''
         'manifest = load_manifest(Path(sys.argv[1]))'
-        'sys.stdout.write("LAS_WORKFLOW_ID=" + manifest.id + "\n")'
-        'sys.stdout.write("LAS_WORKFLOW_STATE=" + ("enabled" if manifest.enabled else "disabled") + "\n")'
-        'sys.stdout.write("LAS_WORKFLOW_GRAPH=" + ("yes" if manifest.workflow else "no") + "\n")'
+        'sys.stdout.write(''LAS_WORKFLOW_ID='' + manifest.id + ''\n'')'
+        'sys.stdout.write(''LAS_WORKFLOW_STATE='' + (''enabled'' if manifest.enabled else ''disabled'') + ''\n'')'
+        'sys.stdout.write(''LAS_WORKFLOW_GRAPH='' + (''yes'' if manifest.workflow else ''no'') + ''\n'')'
     )
     return ($lines -join "`n")
 }
