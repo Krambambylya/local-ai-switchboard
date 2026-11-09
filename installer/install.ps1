@@ -751,14 +751,15 @@ function Install-GatewaySoftware {
             venv   = $venvPython
         }
     }
-    $venvText = @(& $venvPython -c 'import sys; sys.stdout.write(sys.executable + chr(10) + sys.version.split()[0] + chr(10))') -join "`n"
-    if ($LASTEXITCODE -ne 0 -or $venvText -like '*python_embeded*') {
+    $venvProbe = Invoke-CapturedCommand -FilePath $venvPython -ArgumentList @('-c', 'import sys; sys.stdout.write(sys.executable + chr(10) + sys.version.split()[0] + chr(10))')
+    $venvText = $venvProbe.Text
+    if ($venvProbe.ExitCode -ne 0 -or $venvText -like '*python_embeded*') {
         return New-StageResult -Verified $false -Detail 'The gateway interpreter check failed.' -Facts @{}
     }
-    $probe = & $venvPython -c 'import importlib.metadata as metadata; print(metadata.version(''local-ai-switchboard''))' 2>$null
-    $needsInstall = $LASTEXITCODE -ne 0
+    $probe = Invoke-CapturedCommand -FilePath $venvPython -ArgumentList @('-c', "import importlib.metadata as metadata; print(metadata.version('local-ai-switchboard'))")
+    $needsInstall = $probe.ExitCode -ne 0
     if (-not $needsInstall) {
-        $installedVersion = [string]@($probe)[-1]
+        $installedVersion = [string]@($probe.Text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[-1]
         if ($installedVersion -ne $projectVersion) {
             Write-InstallLog "Gateway package $installedVersion is already installed. Leaving it in place. Use update.ps1 to change it."
         }
@@ -769,9 +770,10 @@ function Install-GatewaySoftware {
             return New-StageResult -Verified $false -Detail 'pip could not install the gateway project.' -Facts @{}
         }
     }
-    $versionCode = 'import importlib.metadata as metadata; names=(''local-ai-switchboard'',''fastapi'',''httpx'',''pydantic-settings'',''uvicorn''); print(chr(10).join(name + ''=='' + metadata.version(name) for name in names))'
-    $versions = @(& $venvPython -c $versionCode)
-    if ($LASTEXITCODE -ne 0 -or $versions.Count -lt 5) {
+    $versionCode = "import importlib.metadata as metadata; names=('local-ai-switchboard','fastapi','httpx','pydantic-settings','uvicorn'); print(chr(10).join(name + '==' + metadata.version(name) for name in names))"
+    $versionResult = Invoke-CapturedCommand -FilePath $venvPython -ArgumentList @('-c', $versionCode)
+    $versions = @($versionResult.Text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($versionResult.ExitCode -ne 0 -or $versions.Count -lt 5) {
         return New-StageResult -Verified $false -Detail 'The gateway dependencies could not be imported after installation.' -Facts @{}
     }
     $portableRoot = ''
@@ -818,14 +820,14 @@ function Install-GatewaySoftware {
     Write-Utf8File -Path $initScript -Text (($initLines -join "`r`n") + "`r`n")
     Push-Location $InstallRoot
     try {
-        $dbOutput = @(& $venvPython $initScript)
+        $dbResult = Invoke-CapturedCommand -FilePath $venvPython -ArgumentList @($initScript)
     } finally {
         Pop-Location
     }
-    if ($LASTEXITCODE -ne 0) {
+    if ($dbResult.ExitCode -ne 0) {
         return New-StageResult -Verified $false -Detail 'SQLite initialization failed.' -Facts @{}
     }
-    $dbPath = [string]@($dbOutput)[-1]
+    $dbPath = [string]@($dbResult.Text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[-1]
     if (-not (Test-Path -LiteralPath $dbPath)) {
         return New-StageResult -Verified $false -Detail 'switchboard.db was not created.' -Facts @{}
     }

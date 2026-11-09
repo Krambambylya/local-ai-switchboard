@@ -466,6 +466,10 @@ def test_missing_ollama_profile_is_created_instead_of_aborting() -> None:
     assert "$pullCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('pull', [string]$Pins.ollama.model)" in model
     gateway = _between(install, "function Install-GatewaySoftware", "function Invoke-StackVerification")
     assert "$pipCode = Invoke-PipInstall -Python $venvPython -SourceRoot $SourceRoot" in gateway
+    assert "metadata.version('local-ai-switchboard')" in gateway
+    assert "$needsInstall = $probe.ExitCode -ne 0" in gateway
+    assert "2>$null" not in gateway
+    assert gateway.count("Invoke-CapturedCommand") >= 4
     assert "2>&1" not in doctor
     assert "Invoke-CapturedCommand" in doctor
 
