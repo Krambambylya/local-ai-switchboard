@@ -428,8 +428,8 @@ function Install-OllamaModel {
             }
         }
         Write-InstallLog "Downloading $($Pins.ollama.model)."
-        Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('pull', [string]$Pins.ollama.model)
-        if ($LASTEXITCODE -ne 0) {
+        $pullCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('pull', [string]$Pins.ollama.model)
+        if ($pullCode -ne 0) {
             return New-StageResult -Verified $false -Detail 'ollama pull failed.' -Facts @{ checksum_verified = $false }
         }
         $listed = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('list')
@@ -452,8 +452,8 @@ function Install-OllamaModel {
     $shown = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', [string]$Pins.ollama.profile)
     if ($shown.ExitCode -ne 0) {
         Write-InstallLog "Creating $($Pins.ollama.profile). The library model is already present."
-        Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)
-        if ($LASTEXITCODE -ne 0) {
+        $createCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)
+        if ($createCode -ne 0) {
             return New-StageResult -Verified $false -Detail 'ollama create failed for the 8192-context profile.' -Facts @{ checksum_verified = $false }
         }
         $shown = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', [string]$Pins.ollama.profile)
@@ -764,8 +764,8 @@ function Install-GatewaySoftware {
         }
     }
     if ($needsInstall) {
-        Invoke-PipInstall -Python $venvPython -SourceRoot $SourceRoot
-        if ($LASTEXITCODE -ne 0) {
+        $pipCode = Invoke-PipInstall -Python $venvPython -SourceRoot $SourceRoot
+        if ($pipCode -ne 0) {
             return New-StageResult -Verified $false -Detail 'pip could not install the gateway project.' -Facts @{}
         }
     }

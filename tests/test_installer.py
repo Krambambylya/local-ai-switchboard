@@ -462,7 +462,10 @@ def test_missing_ollama_profile_is_created_instead_of_aborting() -> None:
     assert "2>&1" not in model
     assert "Invoke-CapturedCommand" in model
     assert "Creating $($Pins.ollama.profile)" in model
-    assert "@('create', [string]$Pins.ollama.profile, '-f', $modelFile)" in model
+    assert "$createCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)" in model
+    assert "$pullCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('pull', [string]$Pins.ollama.model)" in model
+    gateway = _between(install, "function Install-GatewaySoftware", "function Invoke-StackVerification")
+    assert "$pipCode = Invoke-PipInstall -Python $venvPython -SourceRoot $SourceRoot" in gateway
     assert "2>&1" not in doctor
     assert "Invoke-CapturedCommand" in doctor
 
