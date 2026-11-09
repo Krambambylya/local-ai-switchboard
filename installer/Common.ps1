@@ -1615,17 +1615,8 @@ function Write-TransferProgress {
     }
     $script:TransferProgressWidth = $line.TrimEnd().Length
     Write-Host ("`r" + $line) -NoNewline
-    $status = '{0}  {1}  {2}  {3}' -f $amount, $leftText, $speedText, $etaText
-    if ($percent -ge 0 -and $eta -ge 0) {
-        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status -PercentComplete $percent -SecondsRemaining $eta
-    } elseif ($percent -ge 0) {
-        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status -PercentComplete $percent
-    } else {
-        Write-Progress -Id 1 -Activity "$Activity $name" -Status $status
-    }
     if ($Done) {
         Write-Host ''
-        Write-Progress -Id 1 -Activity "$Activity $name" -Completed
         $script:TransferProgressWidth = 0
         $script:TransferProgressAt = [datetime]::MinValue
     }

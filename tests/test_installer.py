@@ -314,7 +314,7 @@ def test_downloads_show_remaining_progress() -> None:
     assert "function Write-TransferProgress" in common
     assert "left " in common
     assert "ETA " in common
-    assert "SecondsRemaining" in common
+    assert "Write-Progress" not in common
     receive = _between(common, "function Receive-PinnedHttpFile", "function Invoke-PinnedTransfer")
     transfer = _between(common, "function Invoke-PinnedTransfer", "function Save-ReplacementDownload")
     assert "Write-TransferProgress" in receive
