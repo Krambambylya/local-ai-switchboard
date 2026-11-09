@@ -831,7 +831,11 @@ function Install-GatewaySoftware {
     if (-not (Test-Path -LiteralPath $dbPath)) {
         return New-StageResult -Verified $false -Detail 'switchboard.db was not created.' -Facts @{}
     }
-    $headerBytes = [System.IO.File]::ReadAllBytes($dbPath)
+    try {
+        $headerBytes = Read-FilePrefix -Path $dbPath -Count 16
+    } catch {
+        return New-StageResult -Verified $false -Detail "The database header could not be read. $($_.Exception.Message)" -Facts @{}
+    }
     $header = [System.Text.Encoding]::ASCII.GetString($headerBytes, 0, [Math]::Min(15, $headerBytes.Length))
     if ($header -ne 'SQLite format 3') {
         return New-StageResult -Verified $false -Detail 'The database file is not SQLite.' -Facts @{}

@@ -75,6 +75,36 @@ function New-StageResult {
     }
 }
 
+function Read-FilePrefix {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Count = 16
+    )
+    # File.ReadAllBytes uses FileShare.Read and fails while SQLite keeps the
+    # database open for writing. ReadWrite matches the sharing SQLite requests.
+    $stream = New-Object System.IO.FileStream(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try {
+        $buffer = New-Object byte[] $Count
+        $read = $stream.Read($buffer, 0, $Count)
+        if ($read -le 0) {
+            return New-Object byte[] 0
+        }
+        if ($read -eq $Count) {
+            return $buffer
+        }
+        $exact = New-Object byte[] $read
+        [System.Array]::Copy($buffer, $exact, $read)
+        return $exact
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Write-Utf8File {
     param(
         [Parameter(Mandatory = $true)][string]$Path,

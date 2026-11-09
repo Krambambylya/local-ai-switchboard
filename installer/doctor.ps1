@@ -232,9 +232,13 @@ Add-DoctorCheck -Name 'startup' -Ok $task.Verified -Detail $task.Detail -Group g
 
 $db = Join-Path $InstallRoot 'data\switchboard.db'
 if (Test-Path -LiteralPath $db) {
-    $headerBytes = [System.IO.File]::ReadAllBytes($db)
-    $header = [System.Text.Encoding]::ASCII.GetString($headerBytes, 0, [Math]::Min(15, $headerBytes.Length))
-    Add-DoctorCheck -Name 'sqlite' -Ok ($header -eq 'SQLite format 3') -Detail $db -Group gateway
+    try {
+        $headerBytes = Read-FilePrefix -Path $db -Count 16
+        $header = [System.Text.Encoding]::ASCII.GetString($headerBytes, 0, [Math]::Min(15, $headerBytes.Length))
+        Add-DoctorCheck -Name 'sqlite' -Ok ($header -eq 'SQLite format 3') -Detail $db -Group gateway
+    } catch {
+        Add-DoctorCheck -Name 'sqlite' -Ok $false -Detail $_.Exception.Message -Group gateway
+    }
 } else {
     Add-DoctorCheck -Name 'sqlite' -Ok $false -Detail 'data\switchboard.db is missing.' -Group gateway
 }

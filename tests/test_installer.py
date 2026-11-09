@@ -464,6 +464,10 @@ def test_missing_ollama_profile_is_created_instead_of_aborting() -> None:
     common = _read("Common.ps1")
     model = _between(install, "function Install-OllamaModel", "function Install-ComfyModels")
     assert "function Invoke-CapturedCommand" in common
+    assert "function Read-FilePrefix" in common
+    assert "FileShare]::ReadWrite" in common
+    assert "ReadAllBytes" not in install
+    assert "ReadAllBytes" not in doctor
     assert "NativeCommandError" in common
     assert "2>&1" not in model
     assert "Invoke-CapturedCommand" in model
