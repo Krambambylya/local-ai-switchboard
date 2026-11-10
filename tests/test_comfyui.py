@@ -25,7 +25,12 @@ from local_ai_switchboard.providers.comfy_process import (
     assert_explicit_listen,
     build_argv,
 )
-from local_ai_switchboard.providers.comfyui import ComfyConfig, ComfyUIProvider, ImageExchange
+from local_ai_switchboard.providers.comfyui import (
+    ComfyConfig,
+    ComfyUIProvider,
+    ImageExchange,
+    memory_is_free,
+)
 from local_ai_switchboard.providers.unavailable import UnavailableProvider
 from local_ai_switchboard.providers.workflows import (
     WorkflowError,
@@ -665,6 +670,15 @@ async def test_active_and_queued_cancel(settings: Settings, tmp_path: Path) -> N
         await provider.aclose()
 
 
+def test_empty_cache_is_free_when_vram_free_meets_the_threshold() -> None:
+    assert memory_is_free({"devices": [{"vram_free": 7_000_000_000, "torch_vram_free": 0}]}, 1024)
+    assert not memory_is_free(
+        {"devices": [{"vram_free": 1000, "torch_vram_free": 7_000_000_000}]},
+        1024,
+    )
+    assert not memory_is_free({"devices": [{}]}, 1024)
+
+
 async def test_free_response_is_not_proof_of_free_vram(settings: Settings, tmp_path: Path) -> None:
     workflows = tmp_path / "workflows"
     _write_registry(workflows)
@@ -677,9 +691,9 @@ async def test_free_response_is_not_proof_of_free_vram(settings: Settings, tmp_p
     assert server.frees == [FREE_BODY]
     assert await provider.resources_released() is False
     server.vram_free = 8 * 1024**3
-    server.torch_vram_free = 1000
+    server.torch_vram_free = 0
     server.queue_running = []
-    assert await provider.resources_released() is False
+    assert await provider.resources_released() is True
     server.torch_vram_free = 8 * 1024**3
     server.queue_running = [[1, "prompt-1", {}, {}, []]]
     assert await provider.resources_released() is False

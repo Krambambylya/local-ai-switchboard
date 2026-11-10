@@ -39,7 +39,7 @@ SQLite at `storage_dir/switchboard.db` stores image job metadata. Chat transcrip
 
 One lease is active. Same-provider work does not unload the resident provider. A switch from chat to image, or from image to chat, calls `release_resources()`, then waits until both of these are true:
 
-- The provider reports that it has released. For Ollama that is an empty `GET /api/ps` after native unload. For ComfyUI that is an empty queue plus `vram_free` and `torch_vram_free` at or above the threshold.
+- The provider reports that it has released. For Ollama that is an empty `GET /api/ps` after native unload. For ComfyUI that is an empty queue plus `vram_free` at or above the threshold. `torch_vram_free` is unused space inside PyTorch's cache and is near zero after `empty_cache`, so it is not the release signal.
 - `nvidia-smi` reports free memory at or above `LAS_GPU_MEMORY_THRESHOLD_MB`. Unknown memory fails closed.
 
 A release timeout leaves the scheduler in `ERROR`. Queued work waits there until a later recovery sees the provider clear and `nvidia-smi` has enough free memory. A new submission retries that recovery once. It is admitted only when the retry succeeds, and it is refused when the GPU is still not clear. There is no separate recovery command. `/health/ready` is degraded when startup recovery does not finish. A failed run returns the scheduler to idle. Shutdown asks the resident provider to release. If this process spawned ComfyUI, it asks that child to exit, waits, and then stops that process tree if it is still running. A ComfyUI process this gateway did not start is left running.

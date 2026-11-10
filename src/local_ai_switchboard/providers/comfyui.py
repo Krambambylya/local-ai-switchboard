@@ -263,7 +263,7 @@ class ComfyUIProvider:
         logger.info("comfyui free requested")
 
     async def resources_released(self) -> bool:
-        """True only when the queue is idle and ComfyUI reports enough free VRAM."""
+        """True only when the queue is idle and ``vram_free`` meets the threshold."""
 
         try:
             queue = await self._get_json("/queue")
@@ -508,20 +508,21 @@ def queue_is_idle(payload: dict[str, Any]) -> bool:
 
 
 def memory_is_free(payload: dict[str, Any], threshold_mb: int) -> bool:
-    """True when ComfyUI itself reports enough free VRAM. Missing data is not free."""
+    """True when ComfyUI reports enough available VRAM. Missing data is not free.
+
+    ``vram_free`` is CUDA free memory plus unused caching-allocator bytes.
+    ``torch_vram_free`` is only that unused reserved slice. After ``empty_cache``
+    it is near zero while the card is free, so it is not a release signal.
+    ``nvidia-smi`` still has to show that the reserved bytes were returned.
+    """
 
     devices = payload.get("devices")
     if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
         return False
-    device = devices[0]
-    threshold = threshold_mb * 1024 * 1024
-    for key in ("vram_free", "torch_vram_free"):
-        value = device.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return False
-        if value < threshold:
-            return False
-    return True
+    value = devices[0].get("vram_free")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value >= threshold_mb * 1024 * 1024
 
 
 def _execution_failure(entry: dict[str, Any]) -> tuple[str, dict[str, str]]:

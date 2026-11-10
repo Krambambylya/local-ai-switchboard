@@ -420,19 +420,11 @@ def release_observation(
     if isinstance(stats, dict):
         devices = stats.get("devices")
         if isinstance(devices, list) and devices and isinstance(devices[0], dict):
-            device = devices[0]
-            threshold = threshold_mb * 1024 * 1024
-            seen = True
-            for key in ("vram_free", "torch_vram_free"):
-                value = device.get(key)
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    seen = False
-                    break
-                if value < threshold:
-                    memory_free = False
-                    break
+            value = devices[0].get("vram_free")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                memory_free = None
             else:
-                memory_free = seen
+                memory_free = value >= threshold_mb * 1024 * 1024
     log_released = (
         "provider image released GPU resources" in log_text or "comfyui free requested" in log_text
     )

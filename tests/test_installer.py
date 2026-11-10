@@ -647,3 +647,13 @@ def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler()
     assert "pause" in launcher
     assert "verify-image-pipeline.cmd" in install
     assert "verify-image-pipeline.cmd" in update
+    updater = (INSTALLER / "update.cmd").read_text(encoding="ascii")
+    assert updater.startswith("@echo off")
+    assert "update.ps1" in updater
+    assert "-InstallRoot" in updater
+    assert "-SourceRoot" in updater
+    assert "pyproject.toml" in updater
+    assert r"%USERPROFILE%\AI\local-ai-switchboard" in updater
+    assert "pause" in updater
+    assert "update.cmd" in install
+    assert "update.cmd" in update

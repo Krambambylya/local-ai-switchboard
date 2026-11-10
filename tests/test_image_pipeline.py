@@ -435,11 +435,19 @@ def test_scheduler_log_gpu_summary_and_offload_do_not_invent_values() -> None:
     assert "device" not in unknown
     released = release_observation(
         {"queue_running": [], "queue_pending": []},
-        {"devices": [{"vram_free": 7_000_000_000, "torch_vram_free": 7_000_000_000}]},
+        {"devices": [{"vram_free": 7_000_000_000, "torch_vram_free": 0}]},
         text,
     )
     assert released["confirmed"] is True
+    assert released["memory_free"] is True
     assert released["queue_idle"] is True
+    held = release_observation(
+        {"queue_running": [], "queue_pending": []},
+        {"devices": [{"vram_free": 1000, "torch_vram_free": 7_000_000_000}]},
+        "",
+    )
+    assert held["memory_free"] is False
+    assert held["confirmed"] is False
     missing_memory = release_observation({"queue_running": [], "queue_pending": []}, None, "")
     assert missing_memory["confirmed"] is False
     assert missing_memory["memory_free"] is None

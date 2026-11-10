@@ -902,7 +902,7 @@ function Install-GatewaySoftware {
         return New-StageResult -Verified $false -Detail 'The database file is not SQLite.' -Facts @{}
     }
     $service = Join-Path $InstallRoot 'service'
-    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd')) {
+    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'update.cmd', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $service $name) -Force
     }
     return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{
