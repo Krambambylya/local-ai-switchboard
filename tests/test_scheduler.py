@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -521,7 +522,7 @@ def test_process_lock_can_be_released(tmp_path: Path) -> None:
     release_process_lock(handle)
 
 
-async def test_startup_unloads_a_resident_ollama_model() -> None:
+async def test_startup_unloads_a_resident_ollama_model(caplog: pytest.LogCaptureFixture) -> None:
     import httpx
 
     from local_ai_switchboard.providers.ollama import OllamaProvider
@@ -557,8 +558,10 @@ async def test_startup_unloads_a_resident_ollama_model() -> None:
         monitor=ScriptedMonitor(7000),
         clock=ManualClock(),
     )
-    await scheduler.start()
+    with caplog.at_level(logging.INFO, logger="local_ai_switchboard.scheduler"):
+        await scheduler.start()
     try:
+        assert "scheduler state IDLE" in caplog.text
         assert library.unloads == 1
         assert library.models == []
         assert scheduler.recovery_ok is True

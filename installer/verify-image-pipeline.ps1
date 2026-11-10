@@ -12,7 +12,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [string]$InstallRoot,
     [int]$Width = 768,
     [int]$Height = 768,
     [int]$Seed = 42,
@@ -24,6 +24,21 @@ $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') {
     Write-Error 'verify-image-pipeline.ps1 runs on Windows.'
     exit 1
+}
+if (-not $InstallRoot) {
+    $parent = Split-Path -Parent $PSScriptRoot
+    $userInstall = Join-Path $env:USERPROFILE 'AI\local-ai-switchboard'
+    $driveInstall = 'D:\AI\LocalAISwitchboard'
+    if ((Test-Path -LiteralPath (Join-Path $parent 'venv\Scripts\python.exe')) -and (Test-Path -LiteralPath (Join-Path $parent '.env'))) {
+        $InstallRoot = $parent
+    } elseif (Test-Path -LiteralPath (Join-Path $userInstall 'venv\Scripts\python.exe')) {
+        $InstallRoot = $userInstall
+    } elseif (Test-Path -LiteralPath (Join-Path $driveInstall 'venv\Scripts\python.exe')) {
+        $InstallRoot = $driveInstall
+    } else {
+        Write-Error 'No Local AI Switchboard install was found. Pass -InstallRoot.'
+        exit 1
+    }
 }
 
 . (Join-Path $PSScriptRoot 'Common.ps1')
@@ -529,13 +544,12 @@ function Assert-OwnedGatewayQuiet {
         $existingLog = Read-FileFromOffset -Path (Get-SwitchboardLogPath) -Offset 0
     }
     $currentState = Get-SchedulerState -Text $existingLog
-    if ($currentState.Known -and $currentState.State -eq 'ERROR') {
-        Fail-PipelineStage -Stage 'A' -Detail 'The GPU scheduler state is ERROR. This check will not stop the gateway.'
-    }
     if ($currentState.Known -and $currentState.State -eq 'STOPPING') {
         Fail-PipelineStage -Stage 'A' -Detail 'The GPU scheduler state is STOPPING. This check will not stop the gateway.'
     }
-    if ($currentState.Known -and $currentState.State -ne 'IDLE') {
+    if ($currentState.Known -and $currentState.State -eq 'ERROR') {
+        Write-InstallLog 'The gateway log last recorded scheduler state ERROR. No queued image job is open, so this check will restart the gateway.'
+    } elseif ($currentState.Known -and $currentState.State -ne 'IDLE') {
         $script:BlockedReason = 'active_jobs'
         Fail-PipelineStage -Stage 'A' -Detail "The GPU scheduler state is $($currentState.State). Wait until it returns to IDLE. No process was stopped."
     }

@@ -182,6 +182,10 @@ class GpuScheduler:
             if not ok:
                 self._last_error = self._last_error or "startup GPU recovery did not finish"
                 self._assign_state(SchedulerState.ERROR)
+            else:
+                # A clean start is already IDLE, and _assign_state does not log an
+                # unchanged state. The log must still record this process.
+                logger.info("scheduler state %s", self._state.value)
             self._worker = asyncio.create_task(self._worker_loop(), name="gpu-scheduler")
 
     async def stop(self) -> None:

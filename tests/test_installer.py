@@ -623,6 +623,8 @@ def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler()
     assert "/v1/assets" in verify
     assert "/v1/chat/completions" in verify
     assert "scheduler state" in verify
+    assert "The GPU scheduler state is ERROR. This check will not stop the gateway." not in verify
+    assert "this check will restart the gateway." in verify
     assert "exit 2" in verify
     assert "active_jobs" in verify
     assert "&&" not in verify
@@ -630,6 +632,8 @@ def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler()
     assert "taskkill" not in verify
     assert "Stop-Process" not in verify
     assert "Invoke-PipInstall" not in verify
+    assert "[Parameter(Mandatory = $true)][string]$InstallRoot" not in verify
+    assert "AI\\local-ai-switchboard" in verify
     assert "function Invoke-QuietNative" in verify
     assert "las-pipeline-" in verify
     assert "ArgumentList @('-c', $Code)" not in verify
