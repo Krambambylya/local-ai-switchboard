@@ -631,6 +631,8 @@ def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler()
     assert "Stop-Process" not in verify
     assert "Invoke-PipInstall" not in verify
     assert "function Invoke-QuietNative" in verify
+    assert "las-pipeline-" in verify
+    assert "ArgumentList @('-c', $Code)" not in verify
     assert "function Get-ErrorDetail" in verify
     assert "Get-RunningStage" in verify
     assert "ErrorActionPreference = 'Continue'" in verify

@@ -213,9 +213,18 @@ function Invoke-PipelinePython {
             $env:PYTHONPATH = $source + [System.IO.Path]::PathSeparator + $previous
         }
     }
+    # Windows PowerShell 5.1 strips double quotes from a native argument, so
+    # python.exe -c receives invalid Python. The snippet is a temporary file.
+    $scriptFile = $null
     try {
-        return (Invoke-QuietNative -FilePath $script:Python -ArgumentList @('-c', $Code))
+        $scriptFile = Join-Path ([System.IO.Path]::GetTempPath()) ('las-pipeline-' + [guid]::NewGuid().ToString('n') + '.py')
+        $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
+        [System.IO.File]::WriteAllText($scriptFile, $Code, $utf8)
+        return (Invoke-QuietNative -FilePath $script:Python -ArgumentList @($scriptFile))
     } finally {
+        if ($scriptFile -and (Test-Path -LiteralPath $scriptFile)) {
+            Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
+        }
         if ($null -eq $previous) {
             Remove-Item -Path 'Env:PYTHONPATH' -ErrorAction SilentlyContinue
         } else {
