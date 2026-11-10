@@ -30,6 +30,7 @@ from local_ai_switchboard.providers.comfy_process import (
     portable_main,
     portable_python,
 )
+from local_ai_switchboard.diagnostics.comfy_graph import validate_graph_support
 from local_ai_switchboard.providers.workflows import (
     WorkflowError,
     WorkflowRegistry,
@@ -221,6 +222,11 @@ class ComfyUIProvider:
                 graph = apply_bindings(manifest, exchange.parameters)
             except WorkflowError as exc:
                 raise ProviderError(str(exc)) from exc
+            if job.cancel_requested or self._cancel_event.is_set():
+                return
+            await self._assert_graph_supported(graph)
+            if job.cancel_requested or self._cancel_event.is_set():
+                return
             prompt_id = await self._submit_prompt(graph)
             exchange.prompt_id = prompt_id
             logger.info("comfyui prompt %s workflow=%s", prompt_id, manifest.id)
@@ -311,6 +317,43 @@ class ComfyUIProvider:
             await self._pause()
         raise ProviderError("ComfyUI did not become healthy")
 
+    async def _assert_graph_supported(self, graph: dict[str, Any]) -> None:
+        """Reject a graph ComfyUI cannot run. This does not submit the prompt."""
+
+        classes = sorted(
+            {
+                node.get("class_type")
+                for node in graph.values()
+                if isinstance(node, dict) and isinstance(node.get("class_type"), str)
+            }
+        )
+        available: dict[str, Any] = {}
+        for class_type in classes:
+            info = await self._object_info(class_type)
+            if info is not None:
+                available[class_type] = info
+        problems = validate_graph_support(graph, available)
+        if not problems:
+            return
+        detail = "; ".join(problems)
+        if len(detail) > 1500:
+            detail = detail[:1500]
+        raise ProviderError(
+            f"ComfyUI cannot run this workflow: {detail}",
+            diagnostics={"object_info": detail[:500]},
+        )
+
+    async def _object_info(self, class_type: str) -> dict[str, Any] | None:
+        path = "/object_info/" + quote(class_type, safe="")
+        try:
+            payload = await self._get_json(path)
+        except ProviderError:
+            return None
+        info = payload.get(class_type)
+        if not isinstance(info, dict):
+            return None
+        return info
+
     async def _submit_prompt(self, graph: dict[str, Any]) -> str:
         response = await self._request(
             "POST",
@@ -349,10 +392,9 @@ class ComfyUIProvider:
                 completed, status = _completion(entry)
                 if completed:
                     if status != "success":
-                        raise ProviderError(
-                            "ComfyUI execution failed",
-                            diagnostics={"prompt_id": prompt_id, "status": status or "error"},
-                        )
+                        message, extra = _execution_failure(entry)
+                        extra["prompt_id"] = prompt_id
+                        raise ProviderError(message, diagnostics=extra)
                     return entry
             if self._clock.monotonic() >= deadline:
                 raise ProviderError(
@@ -480,6 +522,54 @@ def memory_is_free(payload: dict[str, Any], threshold_mb: int) -> bool:
         if value < threshold:
             return False
     return True
+
+
+def _execution_failure(entry: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Return the job error. History without an exception keeps the original text."""
+
+    status = entry.get("status")
+    status_text = ""
+    if isinstance(status, dict):
+        raw = status.get("status_str")
+        if isinstance(raw, str):
+            status_text = raw
+    diagnostics = {"status": status_text or "error"}
+    detail = _exception_text(status if isinstance(status, dict) else None)
+    if not detail:
+        return "ComfyUI execution failed", diagnostics
+    diagnostics["exception_message"] = detail
+    return f"ComfyUI execution failed: {detail}", diagnostics
+
+
+def _exception_text(status: dict[str, Any] | None) -> str:
+    if not isinstance(status, dict):
+        return ""
+    messages = status.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    parts: list[str] = []
+    for item in messages:
+        body: object = None
+        if isinstance(item, dict):
+            body = item
+        elif isinstance(item, list) and len(item) >= 2:
+            body = item[1]
+        if not isinstance(body, dict):
+            continue
+        message = body.get("exception_message")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        kind = body.get("exception_type")
+        text = message.strip()
+        if isinstance(kind, str) and kind.strip():
+            text = f"{kind.strip()}: {text}"
+        parts.append(" ".join(text.split()))
+    if not parts:
+        return ""
+    detail = " ".join(parts)
+    if len(detail) > 500:
+        return detail[:500]
+    return detail
 
 
 def _completion(entry: dict[str, Any]) -> tuple[bool, str]:

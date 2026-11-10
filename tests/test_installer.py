@@ -20,6 +20,7 @@ SCRIPTS = (
     "stop.ps1",
     "doctor.ps1",
     "Common.ps1",
+    "verify-image-pipeline.ps1",
 )
 
 PINS = {
@@ -575,3 +576,30 @@ def test_python_runtime_discovery_and_install_contract() -> None:
         "Interrupted installation recovery",
     ):
         assert name in cases
+
+
+def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler() -> None:
+    verify = _read("verify-image-pipeline.ps1")
+    install = _read("install.ps1")
+    update = _read("update.ps1")
+    doctor = _read("doctor.ps1")
+    start = _read("start.ps1")
+    assert "Save-PinnedFile" not in verify
+    assert "huggingface" not in verify.lower()
+    assert "GpuScheduler" not in verify
+    assert "main.py" not in verify
+    assert "image-pipeline\\latest" in verify
+    assert "/latest/" not in verify
+    assert "workflows\\candidates" in install
+    assert "flux2-klein-t2i" in install
+    assert "Model files were not downloaded" in install
+    assert "workflows\\candidates" in update
+    assert "Model files were not downloaded" in update
+    assert "verify-image-pipeline.ps1" in install
+    assert "verify-image-pipeline.ps1" in update
+    assert "ReserveVramMb" in start
+    assert "--listen" not in start
+    assert "image-pipeline.json" in doctor
+    assert "verified on this machine" in doctor
+    assert "does not claim the model fits fully in VRAM" in doctor
+    assert "flux2-klein-4b" in verify

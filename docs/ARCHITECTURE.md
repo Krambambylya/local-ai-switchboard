@@ -29,7 +29,7 @@ Image:
 1. `POST /v1/assets` checks the workflow registry and does not check a credential.
 2. Unknown workflow ids return 404. A disabled workflow returns 409. A client-supplied graph returns 400.
 3. The job is queued on the same scheduler. The HTTP response is `202` with the job id.
-4. The provider submits only the registered API graph to ComfyUI `POST /prompt`.
+4. The provider submits only the registered API graph to ComfyUI `POST /prompt`. After ComfyUI is healthy, and before that submit, it checks `/object_info` for every class, model filename, input name, and link in the graph. A missing class fails the job and does not upgrade ComfyUI.
 5. Completion is ComfyUI history with `status.completed` true and `status_str` `success`. HTTP 200 from `POST /free` is not treated as free VRAM.
 6. Output files are copied under `storage_dir/outputs/images/<job id>/`. Download resolves that relative path and refuses anything outside the directory.
 
@@ -48,4 +48,4 @@ A release timeout leaves the scheduler in `ERROR`. Queued work waits there until
 
 The Design installer pulls `qwen3.5:4b` through the Ollama application and creates a local profile `qwen3.5:4b-ctx8192` with `num_ctx` 8192. The gateway does not hardcode a model name. Open CoDesign sends the model name on each chat request.
 
-The shipped workflow `flux2-klein-4b` is disabled and contains no graph. See [WORKFLOWS.md](WORKFLOWS.md).
+The shipped workflow `flux2-klein-4b` is disabled and contains no graph. `flux2-klein-t2i` is the adapted official API graph. Install and update stage it under `workflows\candidates`, which the registry does not load. `verify-image-pipeline.ps1` copies it into the live directory, restarts this Gateway once, and sends the image job and the following chat through that process. The chat is what switches the scheduler from ComfyUI back to Ollama. The script does not construct a second scheduler. See [WORKFLOWS.md](WORKFLOWS.md).

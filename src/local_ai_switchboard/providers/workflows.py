@@ -213,7 +213,7 @@ def _check_value(name: str, value: object, workflow: dict[str, Any], binding: Bi
         raise WorkflowError(f"{name} has an unsupported workflow value")
     if isinstance(value, bool) or not isinstance(value, int):
         raise WorkflowError(f"{name} must be an integer")
-    if binding.input in {"width", "height"} and not 64 <= value <= 2048:
+    if (name in {"width", "height"} or binding.input in {"width", "height"}) and not 64 <= value <= 2048:
         raise WorkflowError(f"{name} must be between 64 and 2048")
     if binding.input in {"batch", "batch_size"} and not 1 <= value <= 4:
         raise WorkflowError(f"{name} must be between 1 and 4")

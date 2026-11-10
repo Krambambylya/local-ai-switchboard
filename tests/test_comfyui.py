@@ -89,6 +89,22 @@ class ComfyServer:
         self.images: list[dict[str, str]] = [
             {"filename": "fixture.png", "subfolder": "", "type": "output"}
         ]
+        self.error_message = ""
+        self.image_bytes = PNG
+        self.object_catalog: dict[str, dict[str, object]] = {
+            "FixtureSource": {
+                "input": {
+                    "required": {
+                        "text": ["STRING", {}],
+                        "width": ["INT", {}],
+                        "height": ["INT", {}],
+                        "seed": ["INT", {}],
+                        "batch": ["INT", {}],
+                    }
+                },
+                "output": ["IMAGE"],
+            }
+        }
         self.prompted = threading.Event()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -128,7 +144,18 @@ class ComfyServer:
                 return httpx.Response(200, json={})
             self.queue_running = []
             if self.history_mode == "error":
-                entry = {"status": {"completed": True, "status_str": "error"}, "outputs": {}}
+                status: dict[str, object] = {"completed": True, "status_str": "error"}
+                if self.error_message:
+                    status["messages"] = [
+                        [
+                            "execution_error",
+                            {
+                                "exception_type": "torch.OutOfMemoryError",
+                                "exception_message": self.error_message,
+                            },
+                        ]
+                    ]
+                entry = {"status": status, "outputs": {}}
             else:
                 entry = {
                     "status": {"completed": True, "status_str": "success"},
@@ -137,7 +164,7 @@ class ComfyServer:
             return httpx.Response(200, json={"prompt-1": entry})
         if path == "/view":
             self.views.append(dict(request.url.params))
-            return httpx.Response(200, content=PNG)
+            return httpx.Response(200, content=self.image_bytes)
         if path == "/free":
             self.frees.append(json.loads(request.content))
             if self.release_on_free:
@@ -149,6 +176,12 @@ class ComfyServer:
         if path == "/interrupt":
             self.interrupts += 1
             return httpx.Response(200, json={})
+        if path.startswith("/object_info/"):
+            name = path.removeprefix("/object_info/")
+            info = self.object_catalog.get(name)
+            if info is None:
+                return httpx.Response(200, json={})
+            return httpx.Response(200, json={name: info})
         return httpx.Response(404, json={"path": path})
 
 
@@ -911,6 +944,255 @@ async def test_shutdown_kills_a_child_that_ignores_terminate(
         await provider.aclose()
     assert child.terminated is True
     assert child.killed is True
+
+
+def _png(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, "big")
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00\x00\x00\x00\x00"
+    )
+
+
+def _support_catalog(graph: dict[str, object]) -> dict[str, dict[str, object]]:
+    classes: dict[str, dict[str, object]] = {}
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        inputs = node.get("inputs")
+        if not isinstance(class_type, str) or not isinstance(inputs, dict):
+            continue
+        spec = classes.setdefault(class_type, {"input": {"required": {}}, "output": ["OUTPUT"]})
+        required = spec["input"]["required"]
+        assert isinstance(required, dict)
+        for name, value in inputs.items():
+            if isinstance(value, str) and name in {
+                "unet_name",
+                "clip_name",
+                "vae_name",
+                "sampler_name",
+                "weight_dtype",
+                "type",
+                "device",
+            }:
+                current = required.get(name)
+                if not isinstance(current, list) or not current or not isinstance(current[0], list):
+                    required[name] = [[value]]
+                elif value not in current[0]:
+                    current[0].append(value)
+            elif isinstance(value, str):
+                required.setdefault(name, ["STRING", {}])
+            elif isinstance(value, bool):
+                required.setdefault(name, ["BOOLEAN", {}])
+            elif isinstance(value, float):
+                required.setdefault(name, ["FLOAT", {}])
+            elif isinstance(value, int):
+                required.setdefault(name, ["INT", {}])
+            elif isinstance(value, list):
+                required.setdefault(name, ["*"])
+    return classes
+
+
+async def test_missing_node_class_is_rejected_before_submit(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.object_catalog = {}
+    provider = _provider(settings, workflows, server)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        failed = await _image_job(scheduler)
+    finally:
+        await scheduler.stop()
+    assert failed.status is JobStatus.FAILED
+    assert failed.error is not None
+    assert "FixtureSource" in failed.error
+    assert server.prompts == []
+
+
+async def test_startup_failure_does_not_submit_a_prompt(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.healthy = False
+    portable = tmp_path / "ComfyUI_windows_portable"
+    _touch_portable(portable)
+
+    class ExitedChild(FakeChild):
+        def __init__(self) -> None:
+            super().__init__()
+            self.exit_code = 1
+
+    class ExitedLauncher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def start(self, argv: list[str], cwd: Path) -> ExitedChild:
+            del argv, cwd
+            self.calls += 1
+            return ExitedChild()
+
+    launcher = ExitedLauncher()
+    provider = _provider(settings, workflows, server, portable=portable, launcher=launcher)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        failed = await _image_job(scheduler)
+    finally:
+        await scheduler.stop()
+    assert failed.status is JobStatus.FAILED
+    assert failed.error is not None
+    assert "exited before it became healthy" in failed.error
+    assert server.prompts == []
+    assert launcher.calls == 1
+
+
+async def test_cuda_oom_text_is_returned_on_the_job(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.history_mode = "error"
+    server.complete_after = 1
+    server.error_message = "CUDA out of memory. Tried to allocate 20.00 MiB."
+    provider = _provider(settings, workflows, server)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        failed = await _image_job(scheduler)
+    finally:
+        await scheduler.stop()
+    assert failed.status is JobStatus.FAILED
+    assert failed.error == (
+        "ComfyUI execution failed: torch.OutOfMemoryError: "
+        "CUDA out of memory. Tried to allocate 20.00 MiB."
+    )
+    assert server.prompts
+    assert _stored_files(provider) == []
+
+
+async def test_completed_job_without_an_image_stores_nothing(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.images = []
+    server.complete_after = 1
+    provider = _provider(settings, workflows, server)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        failed = await _image_job(scheduler)
+    finally:
+        await scheduler.stop()
+    assert failed.status is JobStatus.FAILED
+    assert failed.error is not None
+    assert "without an output image" in failed.error
+    assert _stored_files(provider) == []
+
+
+async def test_klein_job_uses_the_scheduler_and_gateway_download(
+    settings: Settings,
+    unavailable_gpu: GpuSnapshot,
+    tmp_path: Path,
+) -> None:
+    from local_ai_switchboard.diagnostics.flux2_klein import DIAGNOSTIC_PROMPT
+    from local_ai_switchboard.diagnostics.image_pipeline import png_dimensions
+    from local_ai_switchboard.main import create_app
+
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    manifest = Path(__file__).resolve().parents[1] / "workflows" / "flux2-klein-t2i" / "manifest.json"
+    (workflows / "flux2-klein-t2i.json").write_bytes(manifest.read_bytes())
+    sample = packaged_workflows_dir() / "flux2-klein-4b.json"
+    (workflows / sample.name).write_text(sample.read_text(encoding="utf-8"), encoding="utf-8")
+    graph = json.loads(manifest.read_text(encoding="utf-8"))["workflow"]
+    server = ComfyServer()
+    server.object_catalog = _support_catalog(graph)
+    server.image_bytes = _png(768, 768)
+    server.complete_after = 1
+    provider = _provider(settings, workflows, server)
+    providers = {
+        ProviderKind.LLM: UnavailableProvider(ProviderKind.LLM, "Ollama"),
+        ProviderKind.IMAGE: provider,
+    }
+    scheduler = GpuScheduler(
+        config=SchedulerConfig(
+            job_timeout_seconds=5,
+            release_timeout_seconds=0.2,
+            poll_interval_seconds=0.01,
+            gpu_memory_threshold_mb=1024,
+        ),
+        providers=providers,
+        monitor=NvidiaGpuMonitor(lambda: unavailable_gpu),
+    )
+    app = create_app(
+        settings,
+        gpu_probe=lambda: unavailable_gpu,
+        providers=providers,
+        scheduler=scheduler,
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/assets",
+            json={
+                "workflow_id": "flux2-klein-t2i",
+                "prompt": DIAGNOSTIC_PROMPT,
+                "width": 768,
+                "height": 768,
+                "seed": 42,
+                "steps": 4,
+            },
+        )
+        assert created.status_code == 202
+        job_id = created.json()["id"]
+        body = _wait_job(client, job_id)
+        assert body["status"] == "succeeded"
+        download = client.get(f"/v1/jobs/{job_id}/download")
+        assert download.status_code == 200
+        assert download.content == server.image_bytes
+        assert png_dimensions(download.content) == (768, 768)
+    prompt = server.prompts[0]["prompt"]
+    assert prompt["76"]["inputs"]["value"] == DIAGNOSTIC_PROMPT
+    assert prompt["75:68"]["inputs"]["value"] == 768
+    assert prompt["75:69"]["inputs"]["value"] == 768
+    assert prompt["75:73"]["inputs"]["noise_seed"] == 42
+    assert prompt["75:62"]["inputs"]["steps"] == 4
+    assert prompt["75:63"]["inputs"]["cfg"] == 1.0
+    assert prompt["75:70"]["inputs"]["unet_name"] == "flux-2-klein-4b-fp8.safetensors"
+    assert prompt["75:71"]["inputs"]["clip_name"] == "qwen_3_4b_fp4_flux2.safetensors"
+    assert prompt["75:74"]["inputs"]["text"] == ["76", 0]
+    assert prompt["9"]["class_type"] == "SaveImage"
+    object_info_at = next(index for index, call in enumerate(server.calls) if call[0] == "GET" and str(call[1]).startswith("/object_info/"))
+    prompt_at = next(index for index, call in enumerate(server.calls) if call == ("POST", "/prompt"))
+    assert object_info_at < prompt_at
+
+
+async def test_llm_job_is_what_releases_comfyui(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    _write_registry(workflows)
+    server = ComfyServer()
+    server.release_on_free = True
+    server.complete_after = 1
+    provider = _provider(settings, workflows, server)
+    llm = LlmStub()
+    scheduler = _scheduler(provider, llm)
+    await scheduler.start()
+    try:
+        finished = await _image_job(scheduler)
+        assert finished.status is JobStatus.SUCCEEDED
+        assert server.frees == []
+        follow_up = await scheduler.submit(ProviderKind.LLM)
+        await asyncio.wait_for(llm.started.wait(), timeout=2)
+        assert server.frees == [FREE_BODY]
+        llm.release.set()
+        released = await asyncio.wait_for(follow_up.done, timeout=2)
+        assert released.status is JobStatus.SUCCEEDED
+    finally:
+        await scheduler.stop()
 
 
 def _replaced(provider: ComfyUIProvider, **changes: object) -> ComfyConfig:

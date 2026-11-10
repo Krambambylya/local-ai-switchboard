@@ -61,8 +61,34 @@ function Add-DoctorCheck {
     Write-InstallLog "$Name : $Detail" $level
 }
 
+function Test-ImagePipelineRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$WorkflowId,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+    $recordPath = Join-Path $InstallRoot 'config\image-pipeline.json'
+    if (-not (Test-Path -LiteralPath $recordPath)) {
+        return $false
+    }
+    try {
+        $record = Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ([string]$record.status -ne 'passed' -or [string]$record.workflow_id -ne $WorkflowId) {
+        return $false
+    }
+    if ($record.vram_fit_claimed -eq $true) {
+        return $false
+    }
+    $hash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    return [string]$record.manifest_sha256 -eq $hash
+}
+
 function Update-ImageWorkflowStatus {
     param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$WorkflowsDir,
         [string]$Python,
         [Parameter(Mandatory = $true)][string]$ProfileName
@@ -101,8 +127,13 @@ function Update-ImageWorkflowStatus {
         }
         $state = Get-WorkflowManifestState -Python $Python -ManifestPath $file.FullName
         if ($state.Ok -and $state.State -eq 'enabled' -and $state.Graph -eq 'yes') {
-            $script:imageWorkflow = 'registered, not tested'
-            $script:imageDetail = "$($state.Id) passed validate_manifest and has not been tested on this machine."
+            if (Test-ImagePipelineRecord -InstallRoot $InstallRoot -WorkflowId $state.Id -ManifestPath $file.FullName) {
+                $script:imageWorkflow = 'verified on this machine'
+                $script:imageDetail = "$($state.Id) passed verify-image-pipeline.ps1. Peak VRAM in that report is a measurement and does not claim the model fits fully in VRAM."
+            } else {
+                $script:imageWorkflow = 'registered, not tested'
+                $script:imageDetail = "$($state.Id) passed validate_manifest and has not been tested on this machine."
+            }
             return
         }
         if (-not $state.Ok) {
@@ -247,7 +278,7 @@ $pythonForWorkflow = ''
 if (Test-Path -LiteralPath $venvPython) {
     $pythonForWorkflow = $venvPython
 }
-Update-ImageWorkflowStatus -WorkflowsDir $workflowsDir -Python $pythonForWorkflow -ProfileName $profileName
+Update-ImageWorkflowStatus -InstallRoot $InstallRoot -WorkflowsDir $workflowsDir -Python $pythonForWorkflow -ProfileName $profileName
 
 if ($profileName -eq 'Design' -and -not $script:comfyReady) {
     $script:comfyLabel = 'not ready'
@@ -258,7 +289,10 @@ Write-InstallLog "Gateway operational: $gatewayLabel"
 Write-InstallLog "Ollama operational: $ollamaLabel"
 Write-InstallLog "ComfyUI operational: $($script:comfyLabel)"
 Write-InstallLog "Image workflow: $($script:imageWorkflow). $($script:imageDetail)"
-if ($script:imageWorkflow -eq 'registered, not tested') {
+if ($script:imageWorkflow -eq 'verified on this machine') {
+    Write-InstallLog 'Image generation: verified on this machine'
+    Write-InstallLog 'The smoke test completed on this PC. The report does not claim that the model fits fully in VRAM.'
+} elseif ($script:imageWorkflow -eq 'registered, not tested') {
     Write-InstallLog 'Image generation: ready'
     Write-InstallLog 'The registered manifest passed validation. This check does not measure VRAM and does not prove a generation on an RTX 4060.'
 } else {

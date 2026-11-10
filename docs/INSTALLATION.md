@@ -57,9 +57,18 @@ Other scripts in the same directory:
 | --- | --- |
 | `start.ps1` | Start the gateway process. It does not start ComfyUI. |
 | `stop.ps1` | Stop the gateway. ComfyUI stays up unless `-IncludeComfyUI` is set. |
-| `doctor.ps1` | Read-only checks. It reports gateway, Ollama, ComfyUI, and image-workflow status separately. A missing image workflow does not by itself mark the gateway unhealthy. |
-| `update.ps1` | Reinstall the gateway package from the local source tree. Refuses an older version unless `-AllowDowngrade` is set. Keeps models, data, secrets, and `.env`. |
+| `doctor.ps1` | Read-only checks. It reports gateway, Ollama, ComfyUI, and image-workflow status separately. A missing image workflow does not by itself mark the gateway unhealthy. An enabled manifest without a passing smoke-test record stays `registered, not tested`. A matching pass record is `verified on this machine` and does not claim the model fits fully in VRAM. |
+| `update.ps1` | Reinstall the gateway package from the local source tree. Refuses an older version unless `-AllowDowngrade` is set. Keeps models, data, secrets, and `.env`. Stages the Klein candidate without downloading a model whose pin already matches. |
 | `uninstall.ps1` | Removes the virtual environment, logon task, and firewall rule. Keeps data and models unless the matching removal switch is set. |
+| `verify-image-pipeline.ps1` | Validate and run `flux2-klein-t2i` through the installed Gateway. This is the image-pipeline command. It does not download models. |
+
+Install and update copy `workflows\flux2-klein-t2i\manifest.json` to `workflows\candidates\flux2-klein-t2i.json`. That directory is not the live registry. After the models are already present, run this from the repository root in Windows PowerShell:
+
+```powershell
+.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
+```
+
+The script has not been executed on the Windows PC. A passing run on that PC is what enables `flux2-klein-t2i`. See [WORKFLOWS.md](WORKFLOWS.md).
 
 The installer does not install an NVIDIA driver and does not configure router port forwarding.
 

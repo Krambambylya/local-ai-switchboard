@@ -38,6 +38,6 @@ Any other field, including `tool_choice`, `n`, `logit_bias`, `user`, and `keep_a
 
 - It cannot call ComfyUI, port 8188, or `POST /v1/assets`.
 - It cannot address Ollama on port 11434 from the Mac. That port is localhost on the Windows PC.
-- It cannot enable the Klein workflow. Image generation stays disabled until a real API-format workflow export is registered.
+- It cannot enable the Klein workflow. Image generation uses `verify-image-pipeline.ps1` on the Windows PC, then the Mac asset client. `flux2-klein-4b` stays disabled.
 
 A second chat can follow the first without an unload. A chat after an image job waits until ComfyUI and `nvidia-smi` both report enough free memory. That wait is inside the gateway. Open CoDesign sees a normal request that takes longer.

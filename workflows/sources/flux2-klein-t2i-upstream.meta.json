@@ -1,0 +1,66 @@
+{
+  "source_page": "https://comfy.org/hub/workflows/flux-2-klein-4b-text-to-image-814fd547d86e/",
+  "requested_url": "https://comfy.com/catalog-media/70fa47f1-1d84-4d4b-9a4f-f8b64790a7d1/d25b4bdb-1e64-44c3-8c86-26443f52318c",
+  "requested_url_result": "HTTP 404 from comfy.com. The same path on comfy.org returned the API graph.",
+  "source_url": "https://comfy.org/catalog-media/70fa47f1-1d84-4d4b-9a4f-f8b64790a7d1/d25b4bdb-1e64-44c3-8c86-26443f52318c",
+  "download_date": "2026-11-10",
+  "sha256": "ad982e14522161830d22cfc43a0a1e40f9b6c2a0a1b0f4bf5ef12a3e8d8b2c89",
+  "original_model_references": {
+    "unet_name": "flux-2-klein-base-4b.safetensors",
+    "clip_name": "qwen_3_4b.safetensors",
+    "vae_name": "flux2-vae.safetensors"
+  },
+  "modifications": [
+    {
+      "node": "75:68",
+      "input": "value",
+      "from": 1024,
+      "to": 768,
+      "reason": "Local width. The downloaded API graph uses 1024. The hub page preview showed 1344."
+    },
+    {
+      "node": "75:69",
+      "input": "value",
+      "from": 1024,
+      "to": 768,
+      "reason": "Local height. The downloaded API graph uses 1024. The hub page preview showed 768."
+    },
+    {
+      "node": "75:62",
+      "input": "steps",
+      "from": 20,
+      "to": 4,
+      "reason": "The FP8 file is the distilled 4B variant and uses 4 steps."
+    },
+    {
+      "node": "75:63",
+      "input": "cfg",
+      "from": 5,
+      "to": 1.0,
+      "reason": "The distilled 4-step mode uses CFG 1.0."
+    },
+    {
+      "node": "75:70",
+      "input": "unet_name",
+      "from": "flux-2-klein-base-4b.safetensors",
+      "to": "flux-2-klein-4b-fp8.safetensors",
+      "reason": "Local FP8 diffusion weights."
+    },
+    {
+      "node": "75:71",
+      "input": "clip_name",
+      "from": "qwen_3_4b.safetensors",
+      "to": "qwen_3_4b_fp4_flux2.safetensors",
+      "reason": "Local FP4 text encoder. qwen_3_4b.safetensors is a different file."
+    }
+  ],
+  "unchanged": [
+    "node ids and connections",
+    "75:61 sampler_name euler",
+    "75:72 vae_name flux2-vae.safetensors",
+    "75:66 batch_size 1",
+    "75:73 noise_seed",
+    "76 prompt input",
+    "9 SaveImage"
+  ]
+}

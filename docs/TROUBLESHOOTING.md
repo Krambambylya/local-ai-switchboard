@@ -10,7 +10,10 @@ These are the failures the current code reports. They are not a record of a live
 | HTTP 400 `Unsupported fields:` | The chat body includes a field outside the allowlist. Remove that field. The gateway will not ignore it. |
 | HTTP 400 about a remote image URL | Send a base64 data URL, or send text only. |
 | HTTP 404 on a workflow id | That id is not in the workflow directory. |
-| HTTP 409 on `flux2-klein-4b` | The shipped slot is disabled until a real API-format export is installed. |
+| HTTP 409 on `flux2-klein-4b` | That packaged slot stays disabled. Use `flux2-klein-t2i` after `verify-image-pipeline.ps1` passes. |
+| HTTP 404 on `flux2-klein-t2i` | The smoke test has not left that manifest in the live workflow directory. |
+| `ComfyUI cannot run this workflow` | The pinned ComfyUI build is missing a node class or one of the three model filenames. The verifier does not upgrade ComfyUI. |
+| CUDA out of memory on the image job | The report keeps that error. Pass `-LowVramReserveMb` to retry once with the existing reserve-VRAM flag. |
 | HTTP 429 | The scheduler queue is at `LAS_MAX_QUEUE_DEPTH`. |
 | A chat waits a long time after an image | The scheduler is waiting for ComfyUI residency and `nvidia-smi` headroom. A timeout leaves the scheduler in error instead of starting Ollama. |
 | Port 8787 is already in use | The installer will not stop a foreign process. Stop the other listener or choose another `LAS_API_PORT` and a matching firewall rule. |
@@ -50,7 +53,9 @@ python3 client/macos/generate_asset.py --help
 
 `~/.config/local-ai-switchboard/config.json` needs `gateway_url` only. The script exits 1 for a bad config or a network failure after retries, and exits 2 when the job finishes as failed, cancelled, or interrupted.
 
-A 409 from the disabled Klein workflow is expected today. Retries are not used for 400, 401, 404, or 409.
+A 409 from `flux2-klein-4b` is expected. After verification, request `flux2-klein-t2i`. Retries are not used for 400, 401, 404, or 409.
+
+The image-pipeline report is `data\diagnostics\image-pipeline\latest` under the install root. A failed run restores the previous workflow files and restarts the Gateway. The workflow stays disabled.
 
 ## Installer
 

@@ -5,7 +5,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallRoot
+    [string]$InstallRoot,
+    [int]$ReserveVramMb = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,10 @@ if (Test-Path -LiteralPath $envFile) {
             }
         }
     }
+}
+if ($ReserveVramMb -ge 0) {
+    $env:LAS_COMFYUI_RESERVE_VRAM_MB = [string]$ReserveVramMb
+    Write-InstallLog "ComfyUI reserve VRAM override is $ReserveVramMb MiB."
 }
 $models = Join-Path $InstallRoot 'models\ollama'
 if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable('OLLAMA_HOST', 'Process'))) {

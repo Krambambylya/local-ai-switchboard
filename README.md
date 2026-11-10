@@ -8,7 +8,13 @@ The current target machine is Windows 11 x64, an RTX 4060 8 GB, and 32 GB of RAM
 
 Automated tests on this Mac cover the gateway contract with mocked Ollama, mocked ComfyUI, and a parsed `nvidia-smi` sample. They do not open a real GPU, a real Ollama, or a real ComfyUI.
 
-The Windows hardware checklist in [docs/TESTING.md](docs/TESTING.md) has not been performed. Treat every LAN, firewall, startup, and image-generation claim as unchecked until that list is run on the PC.
+The Windows hardware checklist in [docs/TESTING.md](docs/TESTING.md) has not been performed. Treat every LAN, firewall, startup, and image-generation claim as unchecked until that list is run on the PC. Automated tests do not prove an RTX 4060 run, and this repository does not record a generated Klein image from that GPU.
+
+On the Windows PC, after the Design install, the image pipeline is one command from the repository root:
+
+```powershell
+.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
+```
 
 ## Layout
 

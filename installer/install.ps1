@@ -662,6 +662,48 @@ function Register-VerifiedWorkflow {
         })
 }
 
+function Install-KleinCandidate {
+    if ($Profile -ne 'Design') {
+        return New-StageResult -Verified $true -Detail 'The Basic profile does not stage the FLUX.2 Klein candidate.' -Facts @{
+            action = 'profile-skip'
+        }
+    }
+    $source = Join-Path $SourceRoot 'workflows\flux2-klein-t2i\manifest.json'
+    if (-not (Test-Path -LiteralPath $source)) {
+        return New-StageResult -Verified $false -Detail 'The flux2-klein-t2i manifest is missing from the source tree.' -Facts @{
+            image_generation        = $false
+            image_generation_tested = $false
+        }
+    }
+    $destinationDir = Join-Path $InstallRoot 'workflows\candidates'
+    $destination = Join-Path $destinationDir 'flux2-klein-t2i.json'
+    if ($DryRun) {
+        Write-InstallLog "Would validate $source and copy it to $destination. The live workflow registry would stay unchanged and model files would not be downloaded."
+        return New-StageResult -Verified $false -Detail 'dry run' -Facts @{ Skipped = 'dry-run'; image_generation = $false }
+    }
+    $venvPython = Join-Path $InstallRoot 'venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        return New-StageResult -Verified $false -Detail 'The Klein candidate needs the gateway virtual environment.' -Facts @{
+            image_generation = $false
+        }
+    }
+    $validated = Get-WorkflowManifestState -Python $venvPython -ManifestPath $source
+    if (-not $validated.Ok -or $validated.Id -ne 'flux2-klein-t2i' -or $validated.State -ne 'enabled' -or $validated.Graph -ne 'yes') {
+        return New-StageResult -Verified $false -Detail "validate_manifest rejected the flux2-klein-t2i candidate. $($validated.Detail)" -Facts @{
+            image_generation        = $false
+            image_generation_tested = $false
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination -Force
+    return New-StageResult -Verified $true -Detail 'Staged flux2-klein-t2i outside the live workflow registry. Model files were not downloaded. Image generation stays disabled until verify-image-pipeline.ps1 passes.' -Facts @{
+        action                  = 'staged'
+        path                    = $destination
+        image_generation        = $false
+        image_generation_tested = $false
+    }
+}
+
 function Invoke-InstallDoctor {
     if ($DryRun) {
         Write-InstallLog 'Would run doctor.ps1 and record gateway, Ollama, ComfyUI, and image workflow status separately.'
@@ -841,7 +883,7 @@ function Install-GatewaySoftware {
         return New-StageResult -Verified $false -Detail 'The database file is not SQLite.' -Facts @{}
     }
     $service = Join-Path $InstallRoot 'service'
-    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1')) {
+    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $service $name) -Force
     }
     return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{
@@ -1022,6 +1064,10 @@ $workflowResult = Register-VerifiedWorkflow
 $script:WorkflowStageResult = $workflowResult
 Add-ComponentResult -Components $components -Name 'workflow' -Result $workflowResult
 Stop-ForStage -Components $components -Result $workflowResult | Out-Null
+
+$candidateResult = Install-KleinCandidate
+Add-ComponentResult -Components $components -Name 'klein_candidate' -Result $candidateResult
+Stop-ForStage -Components $components -Result $candidateResult | Out-Null
 
 if ($SkipFirewall) {
     $firewallResult = New-StageResult -Verified $false -Detail 'The firewall rule was not configured because -SkipFirewall was set.' -Facts @{}

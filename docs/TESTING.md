@@ -14,7 +14,7 @@ Command, macOS Terminal, repository root:
 .venv/bin/pytest -o addopts=
 ```
 
-Result recorded with this documentation: **123 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and `tests/installer_python_runtime.ps1` was not executed here. The Python runtime cases mock discovery and installation. They do not download Python or install software, and they were not run on the Windows 11 PC.
+Result recorded with this documentation: **142 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and `tests/installer_python_runtime.ps1` was not executed here. The Python runtime cases mock discovery and installation. They do not download Python or install software, and they were not run on the Windows 11 PC. Automated tests do not prove an RTX 4060 run.
 
 The suite uses Python 3.13 in `.venv` for development. The project requires Python 3.12 or newer. The Windows installer pins the last Python 3.12 build that still has an official Windows installer, which is 3.12.10, and only when the PC does not already have 3.12 or newer.
 
@@ -33,6 +33,9 @@ The suite uses Python 3.13 in `.venv` for development. The project requires Pyth
 | Chat is not a reverse proxy. No credential is required. Unsupported fields are named. SSE, tool calls, and reasoning are preserved. The stream holds the lease until cancel. | `tests/test_ollama.py` |
 | ComfyUI launch arguments listen on `127.0.0.1` only. Routes do not call ComfyUI. Image jobs use the scheduler. `/free` 200 is not free VRAM. Unsafe filenames are rejected. | `tests/test_comfyui.py` |
 | The packaged Klein file has no API graph | `test_packaged_sample_has_no_api_graph` |
+| Official Klein adaptation, bindings, broken links, missing classes and model files, PNG size, one configured OOM retry, registration only after success, and rollback | `tests/test_image_pipeline.py` |
+| A mocked Klein job through the Gateway scheduler, CUDA OOM text, a missing class before submit, and the chat that releases ComfyUI | `tests/test_comfyui.py` |
+| The verifier does not download models or construct a second scheduler | `test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler` |
 | Restart marks an in-flight image job interrupted and does not resubmit it. Download stays inside the output root. | `tests/test_persistence.py` |
 | The Mac client saves a Unicode path, retries, and sends no credential | `tests/test_generate_asset.py` |
 | Installer pins, no remote script execution, firewall scope, and startup action | `tests/test_installer.py` |
@@ -71,7 +74,7 @@ A parsed sample that mentions an RTX 4060 is an automated test. It is not a hard
 - PowerShell parsing of `installer/*.ps1`.
 - A real `nvidia-smi` process on the RTX 4060, and any live VRAM number.
 - Ollama `qwen3.5:4b` pull, the 8192-context profile, and a chat through the gateway.
-- ComfyUI portable launch, `/system_stats`, and a Klein image. The shipped workflow cannot generate an image until a real API export exists.
+- ComfyUI portable launch on the RTX 4060, `/system_stats` on that machine, and a Klein image from `verify-image-pipeline.ps1`. The workflow is implemented and covered by mocks. Those tests do not prove an RTX 4060 run, and this repository does not record a generated image from that GPU.
 - Reachability from the Mac: gateway on the LAN, Ollama and ComfyUI refused.
 - Open CoDesign pointed at `http://<windows-lan-ip>:8787/v1`.
 - The Mac client saving a file that came from the Windows gateway.

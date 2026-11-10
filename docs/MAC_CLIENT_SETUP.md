@@ -4,7 +4,7 @@ These commands run in macOS Terminal. The client is `client/macos/generate_asset
 
 The script talks to the Gateway on the Windows PC. It submits an image job, polls until the job finishes, and saves the file under the project path you pass to `--output`. It does not start ComfyUI and it does not send credentials.
 
-The shipped workflow `flux2-klein-4b` stays disabled until a real ComfyUI API-format export is registered on the Gateway. The client can request only a workflow id the Gateway has enabled.
+`flux2-klein-4b` stays disabled and returns HTTP 409. After `verify-image-pipeline.ps1` passes on the Windows PC, request `flux2-klein-t2i`. The client can request only a workflow id the Gateway has enabled.
 
 ## Configure the client
 
@@ -41,7 +41,7 @@ Run this from the project directory so `--output` is saved inside that project. 
 python3 client/macos/generate_asset.py \
   --prompt "Premium editorial photograph of a forest river" \
   --output "public/assets/hero image.png" \
-  --workflow flux2-klein-4b \
+  --workflow flux2-klein-t2i \
   --width 768 \
   --height 768 \
   --seed 1
