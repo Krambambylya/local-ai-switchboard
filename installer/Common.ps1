@@ -245,7 +245,13 @@ function Get-NvidiaReport {
         return $report
     }
     $report.CommandFound = $true
-    $output = & $command.Source --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $command.Source --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$output)) {
         $report.Detail = 'nvidia-smi did not return a GPU row.'
         return $report
@@ -2351,7 +2357,13 @@ function Get-WorkflowManifestState {
         [Parameter(Mandatory = $true)][string]$Python,
         [Parameter(Mandatory = $true)][string]$ManifestPath
     )
-    $output = & $Python -c (Get-WorkflowCheckerCode) $ManifestPath 2>&1
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Python -c (Get-WorkflowCheckerCode) $ManifestPath 2>&1
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     $id = ''
     $state = ''
     $graph = ''

@@ -170,6 +170,30 @@ function Fail-PipelineStage {
     throw $Detail
 }
 
+function Invoke-QuietNative {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    # Windows PowerShell 5.1 turns native stderr into a terminating error when
+    # ErrorActionPreference is Stop. A warning must not abort the check.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $FilePath @ArgumentList 2>&1
+        $code = 1
+        if ($null -ne $LASTEXITCODE) {
+            $code = [int]$LASTEXITCODE
+        }
+        $text = ((@($output) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+        return @{ ExitCode = $code; Text = $text }
+    } catch {
+        return @{ ExitCode = 1; Text = [string]$_.Exception.Message }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Invoke-PipelinePython {
     param([Parameter(Mandatory = $true)][string]$Code)
     $previous = $env:PYTHONPATH
@@ -190,9 +214,7 @@ function Invoke-PipelinePython {
         }
     }
     try {
-        $output = & $script:Python -c $Code 2>&1
-        $text = ((@($output) | ForEach-Object { [string]$_ }) -join "`n").Trim()
-        return @{ ExitCode = [int]$LASTEXITCODE; Text = $text }
+        return (Invoke-QuietNative -FilePath $script:Python -ArgumentList @('-c', $Code))
     } finally {
         if ($null -eq $previous) {
             Remove-Item -Path 'Env:PYTHONPATH' -ErrorAction SilentlyContinue
@@ -202,15 +224,46 @@ function Invoke-PipelinePython {
     }
 }
 
+function Get-ErrorDetail {
+    param($ErrorRecord)
+    $parts = @()
+    $current = $ErrorRecord.Exception
+    while ($null -ne $current) {
+        $message = [string]$current.Message
+        if ($message -and (($parts.Count -eq 0) -or ($parts[$parts.Count - 1] -ne $message))) {
+            $parts += $message
+        }
+        $current = $current.InnerException
+    }
+    $text = $parts -join ' '
+    $line = 0
+    if ($ErrorRecord.InvocationInfo) {
+        $line = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber
+    }
+    if ($line -gt 0) {
+        $text = "Line ${line}: $text"
+    }
+    return $text
+}
+
+function Get-RunningStage {
+    foreach ($name in @('A', 'B', 'C', 'D', 'E', 'F', 'record')) {
+        if ($script:Stages[$name] -eq 'running') {
+            return $name
+        }
+    }
+    return ''
+}
+
 function Add-GpuSample {
     if (-not $script:NvidiaSmi) {
         return
     }
-    $output = & $script:NvidiaSmi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw --format=csv,noheader,nounits
-    if ($LASTEXITCODE -ne 0) {
+    $sample = Invoke-QuietNative -FilePath $script:NvidiaSmi -ArgumentList @('--query-gpu=timestamp,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw', '--format=csv,noheader,nounits')
+    if ($sample.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($sample.Text)) {
         return
     }
-    $line = @($output)[0]
+    $line = @($sample.Text -split '\r?\n' | Where-Object { $_ -match '^\d' })[0]
     if ($line) {
         Add-Content -LiteralPath $script:CsvPath -Value ([string]$line).Trim() -Encoding UTF8
     }
@@ -705,6 +758,9 @@ function Invoke-GatewayChat {
         $message = Get-ObjectProperty -Object $choice -Name 'message'
         $reply = [string](Get-ObjectProperty -Object $message -Name 'content')
         return @{ Ok = $true; Text = $reply.Trim(); LogOffset = $logOffset }
+    } catch {
+        $detail = Get-ErrorDetail -ErrorRecord $_
+        return @{ Ok = $false; Text = $detail; LogOffset = $logOffset }
     } finally {
         $client.Dispose()
     }
@@ -978,12 +1034,12 @@ try {
     if (-not $gpu.Available) {
         Fail-PipelineStage -Stage 'A' -Detail $gpu.Detail
     }
-    $used = & $script:NvidiaSmi --query-gpu=memory.used --format=csv,noheader,nounits
+    $used = Invoke-QuietNative -FilePath $script:NvidiaSmi -ArgumentList @('--query-gpu=memory.used', '--format=csv,noheader,nounits')
     $usedValue = $null
-    if ($LASTEXITCODE -eq 0) {
-        $usedText = @($used)[0].ToString().Trim()
+    if ($used.ExitCode -eq 0) {
+        $usedText = @($used.Text -split '\r?\n' | Where-Object { $_ -match '^\d' })[0]
         $parsedUsed = 0
-        if ([int]::TryParse($usedText, [ref]$parsedUsed)) {
+        if ($usedText -and [int]::TryParse($usedText.Trim(), [ref]$parsedUsed)) {
             $usedValue = $parsedUsed
         }
     }
@@ -1001,11 +1057,11 @@ try {
     if (-not (Test-Path -LiteralPath $script:Python)) {
         Fail-PipelineStage -Stage 'A' -Detail "The gateway interpreter is missing at $($script:Python)."
     }
-    $package = & $script:Python -c "import importlib.metadata as metadata; print(metadata.version('local-ai-switchboard'))" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Fail-PipelineStage -Stage 'A' -Detail 'The installed local-ai-switchboard package could not be imported. This check does not reinstall it.'
+    $package = Invoke-QuietNative -FilePath $script:Python -ArgumentList @('-c', "import importlib.metadata as metadata; print(metadata.version('local-ai-switchboard'))")
+    if ($package.ExitCode -ne 0) {
+        Fail-PipelineStage -Stage 'A' -Detail "The installed local-ai-switchboard package could not be imported. This check does not reinstall it. $($package.Text)"
     }
-    Write-InstallLog "Installed gateway package $(([string]$package).Trim())."
+    Write-InstallLog "Installed gateway package $(([string]$package.Text).Trim())."
 
     $script:Pins = Get-InstallerPins
     $script:Report.comfyui_pin = [string]$script:Pins.comfyui.version
@@ -1480,7 +1536,13 @@ Path(os.environ["LAS_VERIFY_OUT"]).write_text(json.dumps(document, indent=2) + "
         Fail-PipelineStage -Stage 'record' -Detail "Gateway readiness after verification was live $liveAfter and ready $readyAfter."
     }
     $doctorScript = Join-Path $PSScriptRoot 'doctor.ps1'
-    $doctorText = & $doctorScript -InstallRoot $InstallRoot *>&1 | Out-String
+    $doctorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $doctorText = & $doctorScript -InstallRoot $InstallRoot *>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $doctorPreference
+    }
     $doctorPath = Join-Path $script:ReportDir 'doctor.txt'
     Write-Utf8File -Path $doctorPath -Text $doctorText
     if ($doctorText -notmatch 'Image workflow: verified on this machine') {
@@ -1493,9 +1555,19 @@ Path(os.environ["LAS_VERIFY_OUT"]).write_text(json.dumps(document, indent=2) + "
     Write-InstallLog 'flux2-klein-t2i is verified on this machine. The report does not claim that the model fits fully in VRAM. This run does not show that the Gateway is reachable from a Mac.'
 } catch {
     if (-not $script:FailureStage) {
-        $script:FailureStage = 'unhandled'
-        $script:FailureDetail = [string]$_.Exception.Message
+        $running = Get-RunningStage
+        if ($running) {
+            $script:FailureStage = $running
+            Set-StageResult -Name $running -Status 'fail'
+        } else {
+            $script:FailureStage = 'unhandled'
+        }
+        $script:FailureDetail = Get-ErrorDetail -ErrorRecord $_
         Add-ErrorLog $script:FailureDetail
+        if ($_.ScriptStackTrace) {
+            Add-ErrorLog ([string]$_.ScriptStackTrace)
+        }
+        Write-InstallLog $script:FailureDetail 'ERROR'
     }
     $script:Report.workflow_enabled = $false
     $script:Report.doctor_verified = $false
@@ -1537,9 +1609,17 @@ Write-InstallLog "Result: $($script:Result)"
 if ($script:Result -eq 'PASS' -and $script:Succeeded) {
     exit 0
 }
+$summaryWord = 'failed'
 if ($script:Result -eq 'PARTIAL') {
-    Write-InstallLog "Verification is partial at stage $($script:FailureStage). The workflow was not newly verified." 'ERROR'
+    $summaryWord = 'partial'
+}
+$summary = "Verification is $summaryWord at stage $($script:FailureStage)."
+if ($script:FailureDetail) {
+    $summary = $summary + ' ' + $script:FailureDetail
+}
+$summary = $summary + ' The workflow was not newly verified.'
+Write-InstallLog $summary 'ERROR'
+if ($script:Result -eq 'PARTIAL') {
     exit 2
 }
-Write-InstallLog "Verification failed at stage $($script:FailureStage). The workflow was not newly verified." 'ERROR'
 exit 1
