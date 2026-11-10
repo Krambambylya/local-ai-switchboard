@@ -43,10 +43,10 @@ curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 "http://<windows-lan-ip>:
 
 The second command should fail to connect. A successful HTTP response from the Mac means Ollama is reachable beyond localhost, which the design does not allow.
 
-The Klein image item is one command from the repository root in Windows PowerShell:
+The Klein image item is one double-click on the Windows PC:
 
-```powershell
-.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
-```
+`installer\verify-image-pipeline.cmd`
+
+It finds the install, runs the 768×768 check in Windows PowerShell 5.1, and leaves the window open.
 
 It uses the adapted official API graph. Do not build or export a ComfyUI graph by hand. `flux2-klein-4b` stays disabled and still returns HTTP 409. The command has not been run on this PC, so the checklist box stays open. A report from that command records peak VRAM and does not claim the model fits fully in VRAM. Automated tests do not prove an RTX 4060 run. See [WORKFLOWS.md](WORKFLOWS.md).

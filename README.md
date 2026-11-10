@@ -10,11 +10,11 @@ Automated tests on this Mac cover the gateway contract with mocked Ollama, mocke
 
 The Windows hardware checklist in [docs/TESTING.md](docs/TESTING.md) has not been performed. Treat every LAN, firewall, startup, and image-generation claim as unchecked until that list is run on the PC. Automated tests do not prove an RTX 4060 run, and this repository does not record a generated Klein image from that GPU.
 
-On the Windows PC, after the Design install, the image pipeline is one command from the repository root:
+On the Windows PC, after the Design install, double-click:
 
-```powershell
-.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
-```
+`installer\verify-image-pipeline.cmd`
+
+It finds the install and runs the 768×768 check. The window stays open until you press a key.
 
 ## Layout
 

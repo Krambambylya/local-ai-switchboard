@@ -74,7 +74,7 @@ A parsed sample that mentions an RTX 4060 is an automated test. It is not a hard
 - PowerShell parsing of `installer/*.ps1`.
 - A real `nvidia-smi` process on the RTX 4060, and any live VRAM number.
 - Ollama `qwen3.5:4b` pull, the 8192-context profile, and a chat through the gateway.
-- ComfyUI portable launch on the RTX 4060, `/system_stats` on that machine, and a Klein image from `verify-image-pipeline.ps1`. The workflow is implemented and covered by mocks. Those tests do not prove an RTX 4060 run, and this repository does not record a generated image from that GPU.
+- ComfyUI portable launch on the RTX 4060, `/system_stats` on that machine, and a Klein image from `verify-image-pipeline.ps1`. The verdict, model pins, PNG check, and rollback are covered by mocks. Those tests do not prove an RTX 4060 run, and this repository does not record a generated image from that GPU.
 - Reachability from the Mac: gateway on the LAN, Ollama and ComfyUI refused.
 - Open CoDesign pointed at `http://<windows-lan-ip>:8787/v1`.
 - The Mac client saving a file that came from the Windows gateway.

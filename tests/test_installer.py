@@ -465,12 +465,22 @@ def test_missing_ollama_profile_is_created_instead_of_aborting() -> None:
     common = _read("Common.ps1")
     model = _between(install, "function Install-OllamaModel", "function Install-ComfyModels")
     assert "function Invoke-CapturedCommand" in common
+    assert "function Wait-OllamaApi" in common
+    assert "function Get-OllamaApplicationPath" in common
+    assert "ollama app.exe" in common
     assert "function Read-FilePrefix" in common
     assert "FileShare]::ReadWrite" in common
     assert "ReadAllBytes" not in install
     assert "ReadAllBytes" not in doctor
     assert "NativeCommandError" in common
+    captured = _between(common, "function Invoke-CapturedCommand", "function Invoke-ConsoleCommand")
+    assert "2>&1" not in captured
+    assert "run.cmd" in captured
     assert "2>&1" not in model
+    assert "Checking installed Ollama models." in model
+    assert model.index("Wait-OllamaApi") < model.index("Invoke-CapturedCommand")
+    assert "already installed. It will not be downloaded again." in model
+    assert "The model files were left in place." in model
     assert "Invoke-CapturedCommand" in model
     assert "Creating $($Pins.ollama.profile)" in model
     assert "$createCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)" in model
@@ -603,3 +613,31 @@ def test_image_pipeline_verifier_does_not_download_or_start_a_second_scheduler()
     assert "verified on this machine" in doctor
     assert "does not claim the model fits fully in VRAM" in doctor
     assert "flux2-klein-4b" in verify
+    assert "generated-image.png" in verify
+    assert "environment.json" in verify
+    assert "gateway.log" in verify
+    assert "comfyui.log" in verify
+    assert "yyyyMMdd-HHmmss" in verify
+    assert "qwen3.5:4b" in verify
+    assert "qwen_3_4b.safetensors" in verify
+    assert "/v1/assets" in verify
+    assert "/v1/chat/completions" in verify
+    assert "scheduler state" in verify
+    assert "exit 2" in verify
+    assert "active_jobs" in verify
+    assert "&&" not in verify
+    assert "?." not in verify
+    assert "taskkill" not in verify
+    assert "Stop-Process" not in verify
+    assert "Invoke-PipInstall" not in verify
+    launcher = (INSTALLER / "verify-image-pipeline.cmd").read_text(encoding="ascii")
+    assert launcher.startswith("@echo off")
+    assert "powershell.exe" in launcher
+    assert "pwsh" not in launcher
+    assert "verify-image-pipeline.ps1" in launcher
+    assert "-Width 768" in launcher
+    assert "-Height 768" in launcher
+    assert r"%USERPROFILE%\AI\local-ai-switchboard" in launcher
+    assert "pause" in launcher
+    assert "verify-image-pipeline.cmd" in install
+    assert "verify-image-pipeline.cmd" in update

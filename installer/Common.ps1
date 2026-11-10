@@ -1738,50 +1738,154 @@ function Start-CurlTransfer {
     }
 }
 
+function Read-SharedText {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return ''
+    }
+    $stream = New-Object System.IO.FileStream(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try {
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+        try {
+            return $reader.ReadToEnd()
+        } finally {
+            $reader.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Get-OllamaApplicationPath {
+    param([Parameter(Mandatory = $true)][string]$OllamaExecutable)
+    $directories = @(Split-Path -Parent $OllamaExecutable)
+    if ($env:LOCALAPPDATA) {
+        $directories += (Join-Path $env:LOCALAPPDATA 'Programs\Ollama')
+    }
+    foreach ($directory in $directories) {
+        foreach ($name in @('ollama app.exe', 'Ollama.exe')) {
+            $candidate = Join-Path $directory $name
+            if (Test-Path -LiteralPath $candidate) {
+                return $candidate
+            }
+        }
+    }
+    return $null
+}
+
+function Wait-OllamaApi {
+    param(
+        [Parameter(Mandatory = $true)][string]$OllamaExecutable,
+        [int]$TimeoutSeconds = 40
+    )
+    $url = 'http://127.0.0.1:11434/api/version'
+    if ((Test-HttpStatus -Url $url -TimeoutSeconds 5) -eq 200) {
+        return $true
+    }
+    $app = Get-OllamaApplicationPath -OllamaExecutable $OllamaExecutable
+    if (-not $app) {
+        Write-InstallLog 'Ollama is not answering on 127.0.0.1:11434 and ollama app.exe was not found.' 'WARN'
+        return $false
+    }
+    # Start the tray app directly. `ollama list` would also start ollama app.exe,
+    # and that child keeps the stdout handle when PowerShell is capturing output.
+    Write-InstallLog 'Ollama is not answering on 127.0.0.1:11434. Starting ollama app.exe.'
+    Start-Process -FilePath $app -ArgumentList @('--hide', '--fast-startup') -WindowStyle Hidden | Out-Null
+    $status = Wait-HttpStatus -Url $url -Accept @(200) -TimeoutSeconds $TimeoutSeconds
+    if ($status -eq 200) {
+        return $true
+    }
+    Write-InstallLog 'Ollama did not answer http://127.0.0.1:11434/api/version.' 'WARN'
+    return $false
+}
+
 function Invoke-CapturedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [int]$TimeoutSeconds = 120
     )
-    # Windows PowerShell 5.1 turns a native stderr line merged with 2>&1 into a
-    # terminating NativeCommandError when ErrorActionPreference is Stop.
-    # A missing Ollama profile is an expected probe result, not an abort.
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $restoreNative = $false
-    $savedNative = $null
-    if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
-        $restoreNative = $true
-        $savedNative = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-    }
+    # Windows PowerShell 5.1 turns a native stderr line into a terminating
+    # NativeCommandError when ErrorActionPreference is Stop. A missing Ollama
+    # profile is an expected probe result, not an abort. Capturing ollama list
+    # in the PowerShell pipeline also hangs after the environment lines:
+    # that command starts ollama app.exe with the same stdout handle, and
+    # PowerShell waits for the app to exit. cmd.exe redirects to files instead.
+    $directory = Join-Path ([System.IO.Path]::GetTempPath()) ('las-capture-' + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    $stdoutFile = Join-Path $directory 'stdout.txt'
+    $stderrFile = Join-Path $directory 'stderr.txt'
+    $commandFile = Join-Path $directory 'run.cmd'
+    $process = $null
     try {
-        $output = & $FilePath @ArgumentList 2>&1
-        $code = 0
-        if (Test-Path -LiteralPath 'variable:LASTEXITCODE') {
-            $code = [int]$LASTEXITCODE
+        $quoted = @(foreach ($argument in (@($FilePath) + @($ArgumentList))) {
+                (ConvertTo-ProcessArgument -Argument $argument).Replace('%', '%%')
+            })
+        $stdoutQuoted = (ConvertTo-ProcessArgument -Argument $stdoutFile).Replace('%', '%%')
+        $stderrQuoted = (ConvertTo-ProcessArgument -Argument $stderrFile).Replace('%', '%%')
+        $commandLine = ($quoted -join ' ') + ' 1>' + $stdoutQuoted + ' 2>' + $stderrQuoted
+        $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        [System.IO.File]::WriteAllText($commandFile, "@echo off`r`n$commandLine`r`n", $oem)
+        $comspec = $env:ComSpec
+        if ([string]::IsNullOrWhiteSpace($comspec)) {
+            $comspec = Join-Path $env:SystemRoot 'System32\cmd.exe'
         }
-        $text = (@($output) | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                [string]$_.Exception.Message
-            } else {
-                [string]$_
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $comspec
+        $startInfo.Arguments = '/d /c ' + (ConvertTo-ProcessArgument -Argument $commandFile)
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WorkingDirectory = (Get-Location).ProviderPath
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            $global:LASTEXITCODE = 1
+            return @{ ExitCode = 1; Text = 'The command did not start.' }
+        }
+        $finished = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $finished) {
+            $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+            if (Test-Path -LiteralPath $taskkill) {
+                $killInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $killInfo.FileName = $taskkill
+                $killInfo.Arguments = '/PID ' + [string]$process.Id + ' /T /F'
+                $killInfo.UseShellExecute = $false
+                $killInfo.CreateNoWindow = $true
+                $killer = [System.Diagnostics.Process]::Start($killInfo)
+                if ($killer) {
+                    [void]$killer.WaitForExit(5000)
+                }
             }
-        }) -join "`n"
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
+            } catch {
+            }
+            [void]$process.WaitForExit(5000)
+            $global:LASTEXITCODE = 124
+            return @{ ExitCode = 124; Text = "The command did not finish within $TimeoutSeconds seconds." }
+        }
+        [void]$process.WaitForExit()
+        $stdout = Read-SharedText -Path $stdoutFile
+        $stderr = Read-SharedText -Path $stderrFile
+        $text = @($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join "`n"
+        $code = [int]$process.ExitCode
         $global:LASTEXITCODE = $code
         return @{ ExitCode = $code; Text = $text }
     } catch {
-        $code = 1
-        if (Test-Path -LiteralPath 'variable:LASTEXITCODE' -and $null -ne $LASTEXITCODE) {
-            $code = [int]$LASTEXITCODE
-        }
-        $global:LASTEXITCODE = $code
-        return @{ ExitCode = $code; Text = [string]$_.Exception.Message }
+        $global:LASTEXITCODE = 1
+        return @{ ExitCode = 1; Text = [string]$_.Exception.Message }
     } finally {
-        $ErrorActionPreference = $previous
-        if ($restoreNative) {
-            $PSNativeCommandUseErrorActionPreference = $savedNative
+        if ($process) {
+            $process.Dispose()
         }
+        Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

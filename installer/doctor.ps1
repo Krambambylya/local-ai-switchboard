@@ -184,6 +184,7 @@ if ($null -eq $ollama) {
             $loopback = $false
         }
     }
+    $null = Wait-OllamaApi -OllamaExecutable $ollama.Executable
     $http = Test-HttpStatus -Url 'http://127.0.0.1:11434/api/version' -TimeoutSeconds 5
     Add-DoctorCheck -Name 'ollama-api' -Ok ($http -eq 200 -and $loopback) -Detail "HTTP $http loopback=$loopback" -Group ollama
     $show = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', 'qwen3.5:4b-ctx8192')

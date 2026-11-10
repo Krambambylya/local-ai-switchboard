@@ -55,7 +55,7 @@ python3 client/macos/generate_asset.py --help
 
 A 409 from `flux2-klein-4b` is expected. After verification, request `flux2-klein-t2i`. Retries are not used for 400, 401, 404, or 409.
 
-The image-pipeline report is `data\diagnostics\image-pipeline\latest` under the install root. A failed run restores the previous workflow files and restarts the Gateway. The workflow stays disabled.
+Each image-pipeline report is `data\diagnostics\image-pipeline\<yyyyMMdd-HHmmss>` under the install root. `image-pipeline\latest` is a copy of the newest run. A failed run restores the previous workflow files and does not replace an existing `config\image-pipeline.json`. The workflow stays unverified.
 
 ## Installer
 

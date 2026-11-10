@@ -67,15 +67,11 @@ The runnable workflow id is `flux2-klein-t2i`. `workflows/sources/flux2-klein-t2
 
 That manifest is outside `src/local_ai_switchboard/workflows/`, so a normal Gateway start does not enable it. `install.ps1` and `update.ps1` copy it to `workflows\candidates\flux2-klein-t2i.json`. The registry does not load that directory. A model file whose pinned size and SHA256 already match is not downloaded again.
 
-On the Windows PC, from the repository root:
-
-```powershell
-.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
-```
+On the Windows PC, double-click `installer\verify-image-pipeline.cmd`. It finds the install and runs the check at 768×768. The window stays open. Width, height, and seed stay 768, 768, and 42.
 
 Optional switches are `-Seed 42`, `-LowVramReserveMb <mb>`, and `-SampleIntervalSeconds 1`. Width and height must be 64 through 2048.
 
-The script checks the GPU and the pinned model hashes, restarts the Gateway once with the manifest staged, and submits the image job and the later chat through that Gateway. It does not start a second Gateway or a second ComfyUI, and it does not upgrade the pinned ComfyUI. Before the prompt is submitted, the running provider checks `/object_info` for every node class and for the three model filenames. Success writes `config\image-pipeline.json` and leaves `workflows\flux2-klein-t2i.json` loaded. `doctor.ps1` then reports the workflow as verified on this machine. The report records peak VRAM and does not claim the model fits fully in VRAM. Failure restores the previous workflow files and restarts the Gateway. Reports are written to `{InstallRoot}\data\diagnostics\image-pipeline\latest\`.
+The script checks Windows, the GPU, the pinned model hashes, and the adapted graph. If the GPU scheduler has active work, it stops without ending that work. It then restarts this install's Gateway once with the manifest staged and sends a chat, the image job, and a second chat through that Gateway. The second chat switches the scheduler from ComfyUI back to Ollama. It does not start a second Gateway or a second ComfyUI, download models, or upgrade the pinned ComfyUI. Before the prompt is submitted, object info is checked for every node class and for the three model filenames. Success writes `config\image-pipeline.json` and leaves `workflows\flux2-klein-t2i.json` loaded. `doctor.ps1` then reports the workflow as verified on this machine. The report records peak VRAM and does not claim the model fits fully in VRAM. Failure restores the previous workflow files and does not replace an existing `config\image-pipeline.json`. Each run writes `{InstallRoot}\data\diagnostics\image-pipeline\<yyyyMMdd-HHmmss>\`. `image-pipeline\latest` is a copy of that run. A PASS on this PC does not show that the Gateway is reachable from a Mac.
 
 `-LowVramReserveMb` retries the image job once, and only when the job error is an out-of-memory failure. The retry sets the existing `LAS_COMFYUI_RESERVE_VRAM_MB` value through `start.ps1 -ReserveVramMb`. It does not add a `--lowvram` flag and it does not choose a reserve on its own.
 

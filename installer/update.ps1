@@ -114,7 +114,7 @@ New-Item -ItemType Directory -Force -Path $candidateDir | Out-Null
 Copy-Item -LiteralPath $candidate -Destination (Join-Path $candidateDir 'flux2-klein-t2i.json') -Force
 Write-InstallLog 'Staged flux2-klein-t2i outside the live workflow registry. Model files were not downloaded.'
 
-foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1')) {
+foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd')) {
     $source = Join-Path $scriptHome $name
     if (Test-Path -LiteralPath $source) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $service $name) -Force

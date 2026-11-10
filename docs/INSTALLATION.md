@@ -62,11 +62,7 @@ Other scripts in the same directory:
 | `uninstall.ps1` | Removes the virtual environment, logon task, and firewall rule. Keeps data and models unless the matching removal switch is set. |
 | `verify-image-pipeline.ps1` | Validate and run `flux2-klein-t2i` through the installed Gateway. This is the image-pipeline command. It does not download models. |
 
-Install and update copy `workflows\flux2-klein-t2i\manifest.json` to `workflows\candidates\flux2-klein-t2i.json`. That directory is not the live registry. After the models are already present, run this from the repository root in Windows PowerShell:
-
-```powershell
-.\installer\verify-image-pipeline.ps1 -InstallRoot "D:\AI\LocalAISwitchboard" -Width 768 -Height 768
-```
+Install and update copy `workflows\flux2-klein-t2i\manifest.json` to `workflows\candidates\flux2-klein-t2i.json`. That directory is not the live registry. After the models are already present, double-click `installer\verify-image-pipeline.cmd` on the Windows PC. It finds the install and runs the 768×768 check. The window stays open.
 
 The script has not been executed on the Windows PC. A passing run on that PC is what enables `flux2-klein-t2i`. See [WORKFLOWS.md](WORKFLOWS.md).
 

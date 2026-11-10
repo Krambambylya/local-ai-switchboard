@@ -414,8 +414,22 @@ function Install-OllamaModel {
     if ($modelState -ne 'kept-different') {
         $env:OLLAMA_MODELS = $models
     }
+    Write-InstallLog 'Checking installed Ollama models.'
+    if (-not (Wait-OllamaApi -OllamaExecutable $ollama.Executable)) {
+        return New-StageResult -Verified $false -Detail 'Ollama did not answer http://127.0.0.1:11434/api/version. The model files were left in place.' -Facts @{
+            checksum_verified = $false
+        }
+    }
     $listed = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('list')
+    if ($listed.ExitCode -eq 124) {
+        return New-StageResult -Verified $false -Detail 'ollama list did not finish. The model files were left in place.' -Facts @{
+            checksum_verified = $false
+        }
+    }
     $modelPresent = $listed.Text -match [regex]::Escape($Pins.ollama.model)
+    if ($modelPresent) {
+        Write-InstallLog "$($Pins.ollama.model) is already installed. It will not be downloaded again."
+    }
     $checksumNote = 'The Ollama library tag has no checksum in pins.json.'
     if (-not $modelPresent) {
         $allowed = $AcceptUnchecksummedModels
@@ -450,6 +464,11 @@ function Install-OllamaModel {
         Write-Utf8File -Path $modelFile -Text $modelText
     }
     $shown = Invoke-CapturedCommand -FilePath $ollama.Executable -ArgumentList @('show', [string]$Pins.ollama.profile)
+    if ($shown.ExitCode -eq 124) {
+        return New-StageResult -Verified $false -Detail 'ollama show did not finish. The model files were left in place.' -Facts @{
+            checksum_verified = $false
+        }
+    }
     if ($shown.ExitCode -ne 0) {
         Write-InstallLog "Creating $($Pins.ollama.profile). The library model is already present."
         $createCode = Invoke-ConsoleCommand -FilePath $ollama.Executable -ArgumentList @('create', [string]$Pins.ollama.profile, '-f', $modelFile)
@@ -883,7 +902,7 @@ function Install-GatewaySoftware {
         return New-StageResult -Verified $false -Detail 'The database file is not SQLite.' -Facts @{}
     }
     $service = Join-Path $InstallRoot 'service'
-    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1')) {
+    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $service $name) -Force
     }
     return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{
@@ -905,13 +924,12 @@ function Invoke-StackVerification {
     }
     $ollamaStatus = Test-HttpStatus -Url 'http://127.0.0.1:11434/api/version'
     if ($ollamaStatus -ne 200) {
-        $app = Join-Path (Split-Path -Parent $ollama.Executable) 'Ollama.exe'
-        if (Test-Path -LiteralPath $app) {
+        $app = Get-OllamaApplicationPath -OllamaExecutable $ollama.Executable
+        if ($app) {
             if ($DryRun) {
                 Write-InstallLog 'Would start the Ollama application and request /api/version.'
-            } else {
-                Start-Process -FilePath $app | Out-Null
-                $ollamaStatus = Wait-HttpStatus -Url 'http://127.0.0.1:11434/api/version' -Accept @(200) -TimeoutSeconds 40
+            } elseif (Wait-OllamaApi -OllamaExecutable $ollama.Executable) {
+                $ollamaStatus = 200
             }
         }
     }
