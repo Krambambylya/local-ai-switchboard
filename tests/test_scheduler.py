@@ -641,3 +641,56 @@ async def test_submit_retries_recovery_after_an_empty_error(world) -> None:
     llm.allow_finish()
     assert (await _wait(resumed)).status is JobStatus.SUCCEEDED
     assert (await scheduler.status()).state is SchedulerState.IDLE
+
+
+async def test_submit_sequence_runs_stages_without_nested_submit(world) -> None:
+    scheduler, llm, image, _monitor, order = world
+    job = await scheduler.submit_sequence(
+        [
+            (ProviderKind.LLM, {"stage": 1}),
+            (ProviderKind.IMAGE, {"stage": 2}),
+            (ProviderKind.LLM, {"stage": 3}),
+        ]
+    )
+    await _until_started(llm)
+    assert image.run_calls == 0
+    assert llm.busy is True
+    assert image.busy is False
+    llm.allow_finish()
+    await _until_started(image)
+    assert llm.busy is False
+    assert image.busy is True
+    assert llm.release_calls >= 1
+    image.allow_finish()
+    llm.started.clear()
+    await _until_started(llm)
+    llm.allow_finish()
+    result = await _wait(job)
+    assert result.status is JobStatus.SUCCEEDED
+    assert llm.run_calls == 2
+    assert image.run_calls == 1
+    assert order.count("llm.run") == 2
+    assert order.count("image.run") == 1
+    history = await scheduler.state_history()
+    assert SchedulerState.SWITCH_TO_IMAGE in history
+    assert SchedulerState.SWITCH_TO_LLM in history
+    assert (await scheduler.status()).state is SchedulerState.IDLE
+
+
+async def test_sequence_failure_stops_later_stages(world) -> None:
+    scheduler, llm, image, _monitor, _order = world
+    llm.fail_run = ProviderError("qwen failed")
+    job = await scheduler.submit_sequence(
+        [
+            (ProviderKind.LLM, {"stage": 1}),
+            (ProviderKind.IMAGE, {"stage": 2}),
+        ]
+    )
+    await _until_started(llm)
+    llm.allow_finish()
+    result = await _wait(job)
+    assert result.status is JobStatus.FAILED
+    assert "qwen failed" in (result.error or "")
+    assert image.prepare_calls == 0
+    assert image.run_calls == 0
+    assert (await scheduler.status()).state is SchedulerState.IDLE

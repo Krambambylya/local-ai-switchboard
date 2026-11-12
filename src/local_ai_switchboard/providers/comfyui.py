@@ -115,9 +115,20 @@ class StoredImage:
 class ImageExchange:
     """The image request the scheduler hands to ComfyUI."""
 
-    def __init__(self, workflow_id: str, parameters: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        workflow_id: str,
+        parameters: dict[str, Any],
+        *,
+        source: Path | None = None,
+        output_dir: Path | None = None,
+        asset_id: str | None = None,
+    ) -> None:
         self.workflow_id = workflow_id
         self.parameters = dict(parameters)
+        self.source = source
+        self.output_dir = output_dir
+        self.asset_id = asset_id
         self.prompt_id: str | None = None
         self.outputs: list[StoredImage] = []
 
@@ -218,8 +229,11 @@ class ComfyUIProvider:
             await self._ensure_server()
             if job.cancel_requested or self._cancel_event.is_set():
                 return
+            values = dict(exchange.parameters)
+            if exchange.source is not None:
+                values["image"] = await self._upload_image(exchange.source)
             try:
-                graph = apply_bindings(manifest, exchange.parameters)
+                graph = apply_bindings(manifest, values)
             except WorkflowError as exc:
                 raise ProviderError(str(exc)) from exc
             if job.cancel_requested or self._cancel_event.is_set():
@@ -411,7 +425,8 @@ class ComfyUIProvider:
             raise ProviderError("ComfyUI completed without an output image")
         if len(images) > 8:
             raise ProviderError("ComfyUI returned too many images")
-        destination = (self._config.output_root / job.id).resolve()
+        destination = exchange.output_dir or (self._config.output_root / job.id)
+        destination = destination.resolve()
         destination.mkdir(parents=True, exist_ok=True)
         used: set[str] = set()
         for image in images:
@@ -433,6 +448,40 @@ class ComfyUIProvider:
             )
         if exchange.outputs:
             _write_completion_marker(destination, exchange)
+
+    async def _upload_image(self, path: Path) -> str:
+        """Copy a local file into ComfyUI's input folder. The bytes are not logged."""
+
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise ProviderError("The source image could not be read") from exc
+        filename = path.name
+        if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise ProviderError("The source image name is not usable")
+        try:
+            response = await self._http().post(
+                f"{self._config.base_url}/upload/image",
+                data={"type": "input", "overwrite": "true"},
+                files={"image": (filename, payload, "application/octet-stream")},
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError("ComfyUI did not accept the source image") from exc
+        if response.status_code != 200:
+            raise ProviderError(
+                "ComfyUI did not accept the source image",
+                diagnostics={"status": str(response.status_code)},
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ProviderError("ComfyUI did not accept the source image") from exc
+        name = body.get("name") if isinstance(body, dict) else None
+        if not isinstance(name, str):
+            raise ProviderError("ComfyUI did not accept the source image")
+        safe = _safe_filename(name)
+        logger.info("comfyui upload name=%s bytes=%s", safe, len(payload))
+        return safe
 
     async def _interrupt(self) -> None:
         try:

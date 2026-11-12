@@ -1,0 +1,83 @@
+.panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.title {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+}
+
+.canvas {
+  position: relative;
+  overflow: hidden;
+  max-width: 420px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.box,
+.boxActive {
+  position: absolute;
+  border: 1px solid #9dcaa8;
+  background: rgba(157, 202, 168, 0.18);
+  padding: 0;
+}
+
+.boxActive {
+  border-color: #e7e8ea;
+  background: rgba(231, 232, 234, 0.18);
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.controls input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 4px 6px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.actions button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 5px 9px;
+}
+
+.primary {
+  background: var(--accent) !important;
+  color: #121314 !important;
+  border-color: transparent !important;
+}

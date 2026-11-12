@@ -18,6 +18,7 @@ from local_ai_switchboard.api.chat import router as chat_router
 from local_ai_switchboard.api.health import router as health_router
 from local_ai_switchboard.api.studio import packaged_studio_dir
 from local_ai_switchboard.api.studio import router as studio_router
+from local_ai_switchboard.api.studio_tasks import router as studio_tasks_router
 from local_ai_switchboard.api.middleware import RequestContextMiddleware
 from local_ai_switchboard.config.settings import Settings
 from local_ai_switchboard.gpu.monitor import NvidiaGpuMonitor
@@ -35,6 +36,8 @@ from local_ai_switchboard.scheduler.process import (
 from local_ai_switchboard.services.logging import configure_logging
 from local_ai_switchboard.services.preflight import GpuProbe, run_preflight
 from local_ai_switchboard.storage.jobs import JobStore, image_job_listener
+from local_ai_switchboard.studio.orchestrator import MultimodalTaskOrchestrator
+from local_ai_switchboard.studio.store import StudioStore
 
 
 @asynccontextmanager
@@ -54,9 +57,15 @@ async def _lifespan(app: FastAPI):
             comfy = getattr(app.state, "comfy_provider", None)
             if isinstance(comfy, ComfyUIProvider):
                 await comfy.aclose()
+            orchestrator = getattr(app.state, "orchestrator", None)
+            if isinstance(orchestrator, MultimodalTaskOrchestrator):
+                await orchestrator.shutdown()
             store = getattr(app.state, "job_store", None)
             if isinstance(store, JobStore):
                 store.close()
+            studio_store = getattr(app.state, "studio_store", None)
+            if isinstance(studio_store, StudioStore):
+                studio_store.close()
             release_process_lock(lock)
 
 
@@ -99,6 +108,17 @@ def create_app(
     app.state.scheduler = active_scheduler
     app.state.job_store = store
     app.state.output_root = output_root
+    studio_root = resolved.resolved_storage_dir() / "asset-studio"
+    studio_store = StudioStore(resolved.resolved_storage_dir() / "switchboard.db", studio_root)
+    studio_store.recover_interrupted()
+    app.state.studio_store = studio_store
+    app.state.orchestrator = MultimodalTaskOrchestrator(
+        store=studio_store,
+        scheduler=active_scheduler,
+        model=resolved.studio_model,
+        analysis_edge=resolved.studio_analysis_edge,
+        edit_edge=resolved.studio_edit_edge,
+    )
     llm = selected.get(ProviderKind.LLM)
     image = selected.get(ProviderKind.IMAGE)
     app.state.ollama_provider = llm if isinstance(llm, OllamaProvider) else None
@@ -108,6 +128,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(assets_router)
+    app.include_router(studio_tasks_router)
     app.include_router(studio_router)
     return app
 

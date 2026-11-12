@@ -1,6 +1,6 @@
 """In-process GPU scheduler."""
 
-from local_ai_switchboard.scheduler.coordinator import GpuScheduler
+from local_ai_switchboard.scheduler.coordinator import GpuScheduler, SequenceStage
 from local_ai_switchboard.scheduler.model import (
     JobResult,
     JobStatus,
@@ -22,5 +22,6 @@ __all__ = [
     "SchedulerState",
     "SchedulerStatus",
     "SchedulerUnavailable",
+    "SequenceStage",
     "enforce_single_worker",
 ]

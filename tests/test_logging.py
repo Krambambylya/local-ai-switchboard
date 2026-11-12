@@ -30,6 +30,16 @@ def test_redact_bearer_json_and_assignment() -> None:
     assert '"ok": true' in text
 
 
+def test_redact_data_url_and_images_array() -> None:
+    text = redact(
+        'payload data:image/png;base64,iVBORw0KGgoAAAANSUhEUg and {"images":["aaaa","bbbb"]}'
+    )
+    assert "iVBORw0KGgoAAAANSUhEUg" not in text
+    assert "aaaa" not in text
+    assert "data:[REDACTED]" in text
+    assert '"[REDACTED]"' in text
+
+
 def test_log_file_omits_bearer_values(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     configure_logging(settings)

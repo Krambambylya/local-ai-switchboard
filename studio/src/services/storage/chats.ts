@@ -1,5 +1,6 @@
 import { createId } from "../id";
-import type { ChatMessage, ChatRecord, StoredStudio } from "../../types/api";
+import { parseTask } from "../api/studioTasks";
+import type { ChatMessage, ChatRecord, MessageAttachmentMeta, StoredStudio } from "../../types/api";
 
 export const STORAGE_KEY = "las.studio.v1";
 
@@ -81,6 +82,9 @@ function parseMessage(value: unknown): ChatMessage[] {
   if (value.role !== "user" && value.role !== "assistant") return [];
   if (value.status !== "complete" && value.status !== "pending" && value.status !== "error") return [];
   if (value.error !== null && typeof value.error !== "string") return [];
+  const attachments = Array.isArray(value.attachments) ? value.attachments.flatMap(parseAttachment) : undefined;
+  const task = value.task == null ? null : parseTask(value.task);
+  if (value.task != null && task == null) return [];
   const message: ChatMessage = {
     id: value.id,
     role: value.role,
@@ -89,10 +93,23 @@ function parseMessage(value: unknown): ChatMessage[] {
     createdAt: value.createdAt,
     status: value.status,
     error: value.error,
+    attachments,
+    task,
   };
   if (message.status !== "pending") return [message];
-  if (message.content || message.reasoning) return [{ ...message, status: "complete", error: null }];
+  if (message.content || message.reasoning || message.task) return [{ ...message, status: "complete", error: null }];
   return [{ ...message, status: "error", error: "The request was interrupted." }];
+}
+
+function parseAttachment(value: unknown): MessageAttachmentMeta[] {
+  if (!isRecord(value) || typeof value.name !== "string") return [];
+  return [
+    {
+      name: value.name,
+      size: typeof value.size === "number" ? value.size : 0,
+      type: typeof value.type === "string" ? value.type : "application/octet-stream",
+    },
+  ];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

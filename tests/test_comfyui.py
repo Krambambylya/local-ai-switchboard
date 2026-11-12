@@ -85,6 +85,7 @@ class ComfyServer:
         self.frees: list[object] = []
         self.interrupts = 0
         self.views: list[dict[str, str]] = []
+        self.uploads: list[str] = []
         self.calls: list[tuple[str, str]] = []
         self.history_reads = 0
         self.complete_after = 2
@@ -108,7 +109,11 @@ class ComfyServer:
                     }
                 },
                 "output": ["IMAGE"],
-            }
+            },
+            "LoadImage": {
+                "input": {"required": {"image": ["STRING", {}]}},
+                "output": ["IMAGE"],
+            },
         }
         self.prompted = threading.Event()
 
@@ -167,6 +172,15 @@ class ComfyServer:
                     "outputs": {"result": {"images": self.images}},
                 }
             return httpx.Response(200, json={"prompt-1": entry})
+        if path == "/upload/image" and request.method == "POST":
+            filename = "uploaded.png"
+            if request.headers.get("content-type", "").startswith("multipart/"):
+                content = request.content.decode("latin1")
+                marker = 'filename="'
+                if marker in content:
+                    filename = content.split(marker, 1)[1].split('"', 1)[0] or filename
+            self.uploads.append(filename)
+            return httpx.Response(200, json={"name": filename, "subfolder": "", "type": "input"})
         if path == "/view":
             self.views.append(dict(request.url.params))
             return httpx.Response(200, content=self.image_bytes)
@@ -1207,6 +1221,62 @@ async def test_llm_job_is_what_releases_comfyui(settings: Settings, tmp_path: Pa
         assert released.status is JobStatus.SUCCEEDED
     finally:
         await scheduler.stop()
+
+
+async def test_source_image_is_uploaded_before_prompt(settings: Settings, tmp_path: Path) -> None:
+    workflows = tmp_path / "workflows"
+    workflows.mkdir(parents=True)
+    edit = {
+        "id": "fixture-edit",
+        "title": "Edit fixture",
+        "enabled": True,
+        "workflow": {
+            "source": {
+                "class_type": "LoadImage",
+                "inputs": {"image": "source.png"},
+            }
+        },
+        "bindings": {"image": {"node": "source", "input": "image"}},
+        "required": ["image"],
+        "defaults": {"image": "source.png"},
+    }
+    (workflows / "fixture-edit.json").write_text(json.dumps(edit), encoding="utf-8")
+    sample = packaged_workflows_dir() / "flux2-klein-4b.json"
+    (workflows / sample.name).write_text(sample.read_text(encoding="utf-8"), encoding="utf-8")
+    source = tmp_path / "source.png"
+    source.write_bytes(PNG)
+    server = ComfyServer()
+    server.complete_after = 1
+    provider = _provider(settings, workflows, server)
+    scheduler = _scheduler(provider)
+    await scheduler.start()
+    try:
+        job = await scheduler.submit(
+            ProviderKind.IMAGE,
+            payload=ImageExchange("fixture-edit", {}, source=source),
+        )
+        finished = await asyncio.wait_for(job.done, timeout=2)
+        assert finished.status is JobStatus.SUCCEEDED
+        assert server.uploads == ["source.png"]
+        assert server.prompts
+        assert server.prompts[0]["prompt"]["source"]["inputs"]["image"] == "source.png"
+        upload_at = next(index for index, call in enumerate(server.calls) if call == ("POST", "/upload/image"))
+        prompt_at = next(index for index, call in enumerate(server.calls) if call == ("POST", "/prompt"))
+        assert upload_at < prompt_at
+    finally:
+        await scheduler.stop()
+
+
+def test_flux2_klein_edit_manifest_validates() -> None:
+    path = Path(__file__).resolve().parents[1] / "workflows" / "flux2-klein-edit" / "manifest.json"
+    manifest = validate_manifest(json.loads(path.read_text(encoding="utf-8")))
+    assert manifest.id == "flux2-klein-edit"
+    assert manifest.enabled is True
+    assert "LoadImage" in {node["class_type"] for node in manifest.workflow.values()}
+    assert "qwen_3_4b_fp4_flux2.safetensors" in path.read_text(encoding="utf-8")
+    assert "qwen_3_4b.safetensors" not in path.read_text(encoding="utf-8").replace(
+        "qwen_3_4b_fp4_flux2.safetensors", ""
+    )
 
 
 def _replaced(provider: ComfyUIProvider, **changes: object) -> ComfyConfig:

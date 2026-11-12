@@ -21,6 +21,7 @@ SCRIPTS = (
     "doctor.ps1",
     "Common.ps1",
     "verify-image-pipeline.ps1",
+    "verify-multimodal-pipeline.ps1",
 )
 
 PINS = {

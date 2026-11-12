@@ -47,6 +47,12 @@
   overflow-wrap: anywhere;
 }
 
+.attachments {
+  margin: 0 0 8px;
+  padding-left: 16px;
+  color: var(--text-muted);
+}
+
 .markdown {
   overflow-wrap: anywhere;
 }

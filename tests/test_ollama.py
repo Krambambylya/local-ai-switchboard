@@ -29,6 +29,19 @@ from local_ai_switchboard.scheduler.model import (
 from local_ai_switchboard.services.logging import flush_logs
 
 MODEL = "qwen3.5:4b"
+
+
+def _body_has_image_parts(body: dict[str, object]) -> bool:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        for part in message["content"]:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+    return False
 TOOLS = [
     {
         "type": "function",
@@ -95,10 +108,17 @@ class OllamaServer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.completion_bodies: list[dict[str, object]] = []
+        self.native_bodies: list[dict[str, object]] = []
         self.unloads: list[dict[str, object]] = []
         self.running: list[dict[str, object]] = []
         self.pending_streams: list[httpx.AsyncByteStream] = []
         self.completion = NON_STREAM
+        self.native_completion = {
+            "model": MODEL,
+            "message": {"role": "assistant", "content": "A red square"},
+            "done": True,
+        }
+        self.reject_openai_vision = False
         self.fail_version = False
         self.stick = False
         self.models: list[dict[str, object]] = [
@@ -125,21 +145,37 @@ class OllamaServer:
             return httpx.Response(200, json={"models": list(self.running)})
         if path == "/api/chat":
             assert isinstance(body, dict)
-            self.unloads.append(body)
-            if not self.stick:
-                name = body.get("model")
-                self.running = [
-                    item
-                    for item in self.running
-                    if item.get("name") != name and item.get("model") != name
-                ]
-            return httpx.Response(
-                200,
-                json={"model": body.get("model"), "done": True, "done_reason": "unload"},
-            )
+            messages = body.get("messages")
+            if body.get("keep_alive") == 0 and isinstance(messages, list) and not messages:
+                self.unloads.append(body)
+                if not self.stick:
+                    name = body.get("model")
+                    self.running = [
+                        item
+                        for item in self.running
+                        if item.get("name") != name and item.get("model") != name
+                    ]
+                return httpx.Response(
+                    200,
+                    json={"model": body.get("model"), "done": True, "done_reason": "unload"},
+                )
+            self.native_bodies.append(body)
+            model = str(body["model"])
+            self.running = [{"name": model, "model": model, "size_vram": 3_500_000_000}]
+            return httpx.Response(200, json=self.native_completion)
         if path == "/v1/chat/completions":
             assert isinstance(body, dict)
             self.completion_bodies.append(body)
+            if self.reject_openai_vision and _body_has_image_parts(body):
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "message": "json: cannot unmarshal array into Go struct field Message.messages.content of type string",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                )
             model = str(body["model"])
             self.running = [{"name": model, "model": model, "size_vram": 3_500_000_000}]
             if body.get("stream") is True:
@@ -308,6 +344,33 @@ def test_unsupported_fields_are_named_and_not_forwarded(
     for name in ("keep_alive", "logit_bias", "n", "tool_choice", "user"):
         assert name in message
     assert server.calls == []
+
+
+def test_openai_vision_rejection_falls_back_to_native_chat(
+    gateway: tuple[TestClient, OllamaServer],
+) -> None:
+    client, server = gateway
+    server.reject_openai_vision = True
+    data_url = "data:image/png;base64,aaaa"
+    response = client.post(
+        "/v1/chat/completions",
+        json=_chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {"type": "image_url", "image_url": data_url},
+                    ],
+                }
+            ]
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "A red square"
+    assert server.native_bodies
+    assert "images" in server.native_bodies[-1]["messages"][0]
+    assert "aaaa" in server.native_bodies[-1]["messages"][0]["images"]
 
 
 def test_remote_image_is_rejected_and_base64_is_forwarded(

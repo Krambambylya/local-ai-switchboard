@@ -86,6 +86,30 @@ function Test-ImagePipelineRecord {
     return [string]$record.manifest_sha256 -eq $hash
 }
 
+function Test-MultimodalRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+    $recordPath = Join-Path $InstallRoot 'config\multimodal-pipeline.json'
+    if (-not (Test-Path -LiteralPath $recordPath)) {
+        return $false
+    }
+    try {
+        $record = Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ([string]$record.status -ne 'passed' -or [string]$record.workflow_id -ne 'flux2-klein-edit') {
+        return $false
+    }
+    if ($record.vram_fit_claimed -eq $true) {
+        return $false
+    }
+    $hash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    return [string]$record.manifest_sha256 -eq $hash
+}
+
 function Update-ImageWorkflowStatus {
     param(
         [Parameter(Mandatory = $true)][string]$InstallRoot,
@@ -110,6 +134,9 @@ function Update-ImageWorkflowStatus {
         return
     }
     $reason = 'No enabled workflow manifest is registered.'
+    $verifiedImage = $null
+    $pendingImage = $null
+    $editFile = $null
     foreach ($file in $files) {
         try {
             $payload = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -127,18 +154,43 @@ function Update-ImageWorkflowStatus {
         }
         $state = Get-WorkflowManifestState -Python $Python -ManifestPath $file.FullName
         if ($state.Ok -and $state.State -eq 'enabled' -and $state.Graph -eq 'yes') {
-            if (Test-ImagePipelineRecord -InstallRoot $InstallRoot -WorkflowId $state.Id -ManifestPath $file.FullName) {
-                $script:imageWorkflow = 'verified on this machine'
-                $script:imageDetail = "$($state.Id) passed verify-image-pipeline.ps1. Peak VRAM in that report is a measurement and does not claim the model fits fully in VRAM."
-            } else {
-                $script:imageWorkflow = 'registered, not tested'
-                $script:imageDetail = "$($state.Id) passed validate_manifest and has not been tested on this machine."
+            if ($state.Id -eq 'flux2-klein-edit') {
+                $editFile = $file.FullName
+                continue
             }
-            return
+            if (Test-ImagePipelineRecord -InstallRoot $InstallRoot -WorkflowId $state.Id -ManifestPath $file.FullName) {
+                $verifiedImage = $state
+            } elseif ($null -eq $pendingImage) {
+                $pendingImage = $state
+            }
+            continue
         }
         if (-not $state.Ok) {
             $reason = "$($file.Name) was rejected by validate_manifest."
         }
+    }
+    $editNote = ''
+    if ($editFile) {
+        if (Test-MultimodalRecord -InstallRoot $InstallRoot -ManifestPath $editFile) {
+            $editNote = ' flux2-klein-edit passed verify-multimodal-pipeline.ps1.'
+        } else {
+            $editNote = ' flux2-klein-edit is registered and has not passed verify-multimodal-pipeline.ps1.'
+        }
+    }
+    if ($null -ne $verifiedImage) {
+        $script:imageWorkflow = 'verified on this machine'
+        $script:imageDetail = "$($verifiedImage.Id) passed verify-image-pipeline.ps1. Peak VRAM in that report is a measurement and does not claim the model fits fully in VRAM.$editNote"
+        return
+    }
+    if ($null -ne $pendingImage) {
+        $script:imageWorkflow = 'registered, not tested'
+        $script:imageDetail = "$($pendingImage.Id) passed validate_manifest and has not been tested on this machine.$editNote"
+        return
+    }
+    if ($editFile) {
+        $script:imageWorkflow = 'registered, not tested'
+        $script:imageDetail = $editNote.Trim()
+        return
     }
     $script:imageWorkflow = 'unavailable'
     $script:imageDetail = $reason

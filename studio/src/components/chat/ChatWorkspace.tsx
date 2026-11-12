@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useChat } from "../../features/chat/ChatProvider";
-import { createDraftAttachment, revokeAttachment, type DraftAttachment } from "../../services/attachments";
+import {
+  createDraftAttachment,
+  MAX_ATTACHMENTS,
+  revokeAttachment,
+  type DraftAttachment,
+} from "../../services/attachments";
 import { Composer } from "./Composer";
 import { EmptyState } from "./EmptyState";
 import { MessageList } from "./MessageList";
@@ -20,7 +25,8 @@ export function ChatWorkspace() {
   const files = attachments[chatId] ?? [];
   const generating = chat.inflightChatId !== null;
   const readyModel = chat.modelsPhase === "ready" && !chat.modelMissing;
-  const canSend = draft.trim().length > 0 && !generating && readyModel && files.length === 0;
+  const unsupported = files.some((item) => !item.supported);
+  const canSend = draft.trim().length > 0 && !generating && readyModel && !unsupported;
   const notice = noticeFor(chat.gateway.phase, chat.modelsPhase, chat.models.length, chat.modelMissing);
 
   useEffect(() => {
@@ -35,10 +41,10 @@ export function ChatWorkspace() {
 
   function addFiles(list: File[]) {
     if (!chatId || list.length === 0) return;
-    const next = list.slice(0, 8).map(createDraftAttachment);
+    const next = list.slice(0, MAX_ATTACHMENTS).map(createDraftAttachment);
     setAttachments((current) => {
       const existing = current[chatId] ?? [];
-      return { ...current, [chatId]: [...existing, ...next].slice(0, 8) };
+      return { ...current, [chatId]: [...existing, ...next].slice(0, MAX_ATTACHMENTS) };
     });
   }
 
@@ -54,15 +60,26 @@ export function ChatWorkspace() {
   function submit() {
     if (!canSend) return;
     const text = draft;
-    setDrafts((current) => ({ ...current, [chatId]: "" }));
-    chat.sendMessage(text);
+    const current = attachmentsRef.current[chatId] ?? [];
+    const payload = current.flatMap((item) => (item.supported && item.file ? [item.file] : []));
+    setDrafts((state) => ({ ...state, [chatId]: "" }));
+    setAttachments((state) => {
+      for (const item of state[chatId] ?? []) revokeAttachment(item);
+      return { ...state, [chatId]: [] };
+    });
+    chat.sendMessage(text, payload);
   }
 
   return (
     <section className={styles.workspace} aria-label="Chat">
       <div className={styles.scroll}>
         {active && active.messages.length > 0 ? (
-          <MessageList messages={active.messages} onRetry={() => chat.retryMessage(active.id)} />
+          <MessageList
+            messages={active.messages}
+            onRetry={() => chat.retryMessage(active.id)}
+            onRegionsChange={chat.updateTaskRegions}
+            onApproveTask={chat.approveTask}
+          />
         ) : (
           <EmptyState model={chat.selectedModel} onExample={(example) => setDrafts((current) => ({ ...current, [chatId]: example }))} />
         )}

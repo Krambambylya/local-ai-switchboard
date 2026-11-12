@@ -8,10 +8,11 @@ GET /api/ps is the residency check. A 200 from unload is not proof.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -45,10 +46,18 @@ class ChatExchange:
     """Bridge between a chat route and the provider while the lease is held.
 
     The route reads chunks. The provider writes them and closes with None.
+    prepare() runs on the worker immediately before the request is sent, so a
+    later stage can attach a file that did not exist when the sequence was queued.
+    It must not call the scheduler.
     """
 
-    def __init__(self, body: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        body: Mapping[str, Any],
+        prepare: Callable[[], Mapping[str, Any]] | None = None,
+    ) -> None:
         self.body = dict(body)
+        self.prepare = prepare
         self.chunks: asyncio.Queue[bytes | None] = asyncio.Queue()
         self.ready = asyncio.Event()
         self.status_code = 200
@@ -179,6 +188,11 @@ class OllamaProvider:
             raise ProviderError("LLM job is missing a chat request")
         self._busy = True
         try:
+            if exchange.prepare is not None:
+                prepared = exchange.prepare()
+                if not isinstance(prepared, dict):
+                    raise ProviderError("chat request could not be prepared")
+                exchange.body = dict(prepared)
             rejection = chat_rejection(exchange.body)
             if rejection is not None:
                 await self._reply(exchange, 400, error_payload(rejection, "invalid_request_error"))
@@ -276,6 +290,21 @@ class OllamaProvider:
         try:
             async with client.stream("POST", url, json=exchange.body) as response:
                 self._upstream = response
+                if response.status_code == 400 and _body_has_image(exchange.body):
+                    payload = await response.aread()
+                    await self._close_upstream()
+                    if _native_vision_rejected(payload):
+                        logger.info(
+                            "ollama vision fallback model=%s images=%s",
+                            exchange.body.get("model"),
+                            _image_count(exchange.body),
+                        )
+                        await self._forward_native_chat(job, exchange)
+                        return
+                    exchange.open(response.status_code, "application/json")
+                    if payload and not job.cancel_requested:
+                        await exchange.chunks.put(payload)
+                    return
                 if not stream:
                     payload = await response.aread()
                     if job.cancel_requested:
@@ -306,6 +335,35 @@ class OllamaProvider:
             raise ProviderError("Ollama chat request failed") from exc
         else:
             await self._close_upstream()
+
+    async def _forward_native_chat(self, job: JobContext, exchange: ChatExchange) -> None:
+        """Send image parts through Ollama's native chat API and return an OpenAI body.
+
+        This runs only after /v1/chat/completions rejects a content array.
+        The images field is not logged.
+        """
+
+        try:
+            native = native_chat_body(exchange.body)
+        except ValueError as exc:
+            raise ProviderError("image input could not be sent to Ollama") from exc
+        if job.cancel_requested:
+            return
+        response = await self._request("POST", "/api/chat", native)
+        if job.cancel_requested:
+            return
+        if response.status_code != 200:
+            raise ProviderError(
+                "Ollama chat request failed",
+                diagnostics={"status": str(response.status_code)},
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProviderError("Ollama chat request failed") from exc
+        if not isinstance(payload, dict):
+            raise ProviderError("Ollama chat request failed")
+        await self._reply(exchange, 200, openai_from_native(payload))
 
     async def _reply(self, exchange: ChatExchange, status_code: int, payload: Mapping[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -383,6 +441,133 @@ class OllamaProvider:
         self._upstream = None
         if response is not None and not response.is_closed:
             await response.aclose()
+
+
+def build_chat_body(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    json_mode: bool = False,
+) -> dict[str, Any]:
+    """Build an OpenAI chat body. Image parts use a base64 data URL, never a remote URL."""
+
+    body: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    return body
+
+
+def user_content(text: str, images: list[tuple[str, bytes]] | None = None) -> dict[str, Any]:
+    """One user turn. Without images the content stays a string."""
+
+    if not images:
+        return {"role": "user", "content": text}
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for media_type, data in images:
+        encoded = base64.b64encode(data).decode("ascii")
+        parts.append({"type": "image_url", "image_url": f"data:{media_type};base64,{encoded}"})
+    return {"role": "user", "content": parts}
+
+
+def native_chat_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert an OpenAI content array into Ollama's native messages[].images form."""
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        raise ValueError("messages are missing")
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("message is not an object")
+        role = message.get("role")
+        if not isinstance(role, str):
+            raise ValueError("message role is missing")
+        content = message.get("content")
+        if isinstance(content, str):
+            converted.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            raise ValueError("message content is not supported")
+        texts: list[str] = []
+        images: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+                continue
+            url = _image_url(part)
+            if url is None:
+                continue
+            bare = _bare_base64(url)
+            if bare is None:
+                raise ValueError("image part is not a base64 data URL")
+            images.append(bare)
+        item: dict[str, Any] = {"role": role, "content": "\n".join(texts)}
+        if images:
+            item["images"] = images
+        converted.append(item)
+    native: dict[str, Any] = {"model": body.get("model"), "messages": converted, "stream": False}
+    response_format = body.get("response_format")
+    if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+        native["format"] = "json"
+    return native
+
+
+def openai_from_native(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Map a native chat response onto the OpenAI completion shape the gateway already returns."""
+
+    message = payload.get("message")
+    content = ""
+    if isinstance(message, dict) and isinstance(message.get("content"), str):
+        content = message["content"]
+    return {
+        "id": "chatcmpl-local",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+
+def _body_has_image(body: Mapping[str, Any]) -> bool:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+    return _image_count(body) > 0
+
+
+def _image_count(body: Mapping[str, Any]) -> int:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    count = 0
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        for part in message["content"]:
+            if isinstance(part, dict) and _image_url(part) is not None:
+                count += 1
+    return count
+
+
+def _native_vision_rejected(payload: bytes) -> bool:
+    text = payload.decode("utf-8", "replace").lower()
+    return "cannot unmarshal array" in text
+
+
+def _bare_base64(url: str) -> str | None:
+    stripped = url.strip()
+    if not stripped.lower().startswith("data:") or "base64," not in stripped.lower():
+        return None
+    payload = stripped.split("base64,", 1)[1].strip()
+    if not payload or len(payload) > 20_000_000:
+        return None
+    return payload
 
 
 def _has_remote_image(messages: list[object]) -> bool:

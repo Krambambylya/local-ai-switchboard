@@ -2,7 +2,7 @@ import { Paperclip, SendHorizontal, Square } from "lucide-react";
 import { useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 
 import { AttachmentPreview } from "../attachments/AttachmentPreview";
-import { IMAGE_ANALYSIS_MESSAGE, type DraftAttachment } from "../../services/attachments";
+import { type DraftAttachment } from "../../services/attachments";
 import controls from "../../styles/controls.module.css";
 import styles from "./Composer.module.css";
 
@@ -30,6 +30,7 @@ export function Composer({
   onRemove: (id: string) => void;
 }) {
   const [dragging, setDragging] = useState(false);
+  const unsupported = attachments.some((item) => !item.supported);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -64,11 +65,11 @@ export function Composer({
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      {attachments.length > 0 ? (
-        <>
-          <AttachmentPreview items={attachments} onRemove={onRemove} />
-          <p className={styles.notice} role="status">{IMAGE_ANALYSIS_MESSAGE}</p>
-        </>
+      {attachments.length > 0 ? <AttachmentPreview items={attachments} onRemove={onRemove} /> : null}
+      {unsupported ? (
+        <p className={styles.notice} role="status">
+          Remove unsupported files before sending.
+        </p>
       ) : null}
       {notice ? <p className={styles.notice} role="alert">{notice}</p> : null}
       <div className={styles.row}>

@@ -715,7 +715,20 @@ function Install-KleinCandidate {
     }
     New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
     Copy-Item -LiteralPath $source -Destination $destination -Force
-    return New-StageResult -Verified $true -Detail 'Staged flux2-klein-t2i outside the live workflow registry. Model files were not downloaded. Image generation stays disabled until verify-image-pipeline.ps1 passes.' -Facts @{
+    $editSource = Join-Path $SourceRoot 'workflows\flux2-klein-edit\manifest.json'
+    if (-not (Test-Path -LiteralPath $editSource)) {
+        return New-StageResult -Verified $false -Detail 'The flux2-klein-edit manifest is missing from the source tree.' -Facts @{
+            image_generation = $false
+        }
+    }
+    $editValidated = Get-WorkflowManifestState -Python $venvPython -ManifestPath $editSource
+    if (-not $editValidated.Ok -or $editValidated.Id -ne 'flux2-klein-edit' -or $editValidated.State -ne 'enabled' -or $editValidated.Graph -ne 'yes') {
+        return New-StageResult -Verified $false -Detail "validate_manifest rejected the flux2-klein-edit candidate. $($editValidated.Detail)" -Facts @{
+            image_generation = $false
+        }
+    }
+    Copy-Item -LiteralPath $editSource -Destination (Join-Path $destinationDir 'flux2-klein-edit.json') -Force
+    return New-StageResult -Verified $true -Detail 'Staged flux2-klein-t2i outside the live workflow registry. Model files were not downloaded. Image generation stays disabled until verify-image-pipeline.ps1 passes. flux2-klein-edit stays a candidate until verify-multimodal-pipeline.ps1 passes.' -Facts @{
         action                  = 'staged'
         path                    = $destination
         image_generation        = $false
@@ -902,7 +915,7 @@ function Install-GatewaySoftware {
         return New-StageResult -Verified $false -Detail 'The database file is not SQLite.' -Facts @{}
     }
     $service = Join-Path $InstallRoot 'service'
-    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'update.cmd', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd')) {
+    foreach ($name in @('Common.ps1', 'pins.json', 'start.ps1', 'stop.ps1', 'doctor.ps1', 'uninstall.ps1', 'update.ps1', 'update.cmd', 'verify-image-pipeline.ps1', 'verify-image-pipeline.cmd', 'verify-multimodal-pipeline.ps1', 'verify-multimodal-pipeline.cmd')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $service $name) -Force
     }
     return New-StageResult -Verified $true -Detail 'The gateway environment imports and switchboard.db is SQLite.' -Facts @{

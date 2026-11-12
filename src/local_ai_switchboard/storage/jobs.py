@@ -288,6 +288,8 @@ def image_job_listener(store: JobStore, output_root: Path):
     """Return a scheduler listener that writes image jobs and ignores prompts in logs."""
 
     async def persist(job: ScheduledJob) -> None:
+        if not getattr(job, "persist_image", True):
+            return
         if job.kind is not ProviderKind.IMAGE:
             return
         record = record_from_job(job, output_root)

@@ -1,0 +1,10 @@
+{
+  "source_page": "https://comfy.org/hub/workflows/flux-2-klein-4b-distilled-image-edit-ac37ba4d362c/",
+  "documentation": "https://docs.comfy.org/tutorials/flux/flux-2-klein",
+  "adaptation": "Single LoadImage reference only. The published template's second reference subgraph is not included. Weights point at the files already installed for flux2-klein-t2i. megapixels is 0.5 so a 768-long-side input is not scaled up on 8 GB. cfg stays 1.0, sampler stays euler, and steps stay 4. qwen_3_4b.safetensors is a different file and is not used.",
+  "weights": {
+    "unet_name": "flux-2-klein-4b-fp8.safetensors",
+    "clip_name": "qwen_3_4b_fp4_flux2.safetensors",
+    "vae_name": "flux2-vae.safetensors"
+  }
+}

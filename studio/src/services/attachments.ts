@@ -1,7 +1,7 @@
 import { createId } from "./id";
 
-export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
-export const IMAGE_ANALYSIS_MESSAGE = "Анализ изображений пока не подключён";
+export const MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 4;
 
 const EXTENSIONS = new Map<string, string>([
   [".png", "image/png"],
@@ -20,6 +20,7 @@ export interface DraftAttachment {
   name: string;
   size: number;
   type: string;
+  file: File | null;
   previewUrl: string | null;
   supported: boolean;
   reason: string | null;
@@ -32,7 +33,7 @@ export function inspectAttachment(file: { name: string; size: number; type: stri
     return { supported: false, reason: "This file type is not supported." };
   }
   if (file.size <= 0) return { supported: false, reason: "The file is empty." };
-  if (file.size > MAX_ATTACHMENT_BYTES) return { supported: false, reason: "File is larger than 8 MB." };
+  if (file.size > MAX_ATTACHMENT_BYTES) return { supported: false, reason: "File is larger than 12 MB." };
   return { supported: true, reason: null };
 }
 
@@ -48,7 +49,8 @@ export function createDraftAttachment(file: File): DraftAttachment {
     id: createId(),
     name: file.name,
     size: file.size,
-    type: file.type,
+    type: file.type || (inspection.supported ? mimeFromName(file.name) : file.type),
+    file: inspection.supported ? file : null,
     previewUrl: previewFor(file, inspection.supported),
     supported: inspection.supported,
     reason: inspection.reason,
@@ -69,6 +71,11 @@ function extensionOf(name: string): string | null {
   const index = name.lastIndexOf(".");
   if (index <= 0) return null;
   return name.slice(index).toLowerCase();
+}
+
+function mimeFromName(name: string): string {
+  const extension = extensionOf(name);
+  return (extension && EXTENSIONS.get(extension)) || "application/octet-stream";
 }
 
 function typeMatches(expected: string, actual: string): boolean {

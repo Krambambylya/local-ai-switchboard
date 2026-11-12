@@ -6,6 +6,7 @@ bind a LAN address. Paths use pathlib so the same code runs on macOS and Windows
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path, PurePath
 
@@ -82,6 +83,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8787, ge=1, le=65535)
     log_level: str = "INFO"
+    studio_max_image_bytes: int = Field(default=12 * 1024 * 1024, ge=1, le=32 * 1024 * 1024)
+    studio_max_images: int = Field(default=4, ge=1, le=8)
+    studio_analysis_edge: int = Field(default=1280, ge=256, le=2048)
+    studio_edit_edge: int = Field(default=768, ge=256, le=2048)
+    studio_model: str = "qwen3.5:4b-ctx8192"
 
     @field_validator("ollama_url", "comfyui_url")
     @classmethod
@@ -111,6 +117,13 @@ class Settings(BaseSettings):
     def blank_reserve_vram_is_unset(cls, value: object) -> object:
         if value is None or value == "":
             return None
+        return value
+
+    @field_validator("studio_model")
+    @classmethod
+    def studio_model_is_a_local_name(cls, value: str) -> str:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", value) is None:
+            raise ValueError("studio_model must be a local model name")
         return value
 
     @field_validator("log_level")

@@ -7,7 +7,7 @@ import logging
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from local_ai_switchboard.gpu.monitor import GpuMonitor, memory_is_sufficient
@@ -51,6 +51,14 @@ class Clock:
         await asyncio.sleep(seconds)
 
 
+@dataclass(frozen=True)
+class SequenceStage:
+    """One GPU step inside a single queue admission."""
+
+    kind: ProviderKind
+    payload: object
+
+
 @dataclass
 class Lease:
     """One grant of the GPU. A newer generation ignores a late release."""
@@ -69,10 +77,16 @@ class ScheduledJob:
         kind: ProviderKind,
         enqueued_at: float,
         payload: object | None = None,
+        *,
+        stages: tuple[SequenceStage, ...] | None = None,
+        persist_image: bool = True,
     ) -> None:
         self.id = job_id
         self.kind = kind
         self.payload = payload
+        self.stages = stages
+        self.stage_index = 0
+        self.persist_image = persist_image
         self.status = JobStatus.QUEUED
         self.enqueued_at = enqueued_at
         self.started_at: float | None = None
@@ -237,6 +251,41 @@ class GpuScheduler:
         exchange object here. The scheduler does not inspect it.
         """
 
+        job = ScheduledJob(self._id_factory(), kind, self._clock.monotonic(), payload)
+        await self._enqueue(job)
+        return job
+
+    async def submit_sequence(
+        self,
+        stages: Sequence[tuple[ProviderKind, object]],
+    ) -> ScheduledJob:
+        """Enqueue one FIFO admission that runs stages in order on this worker.
+
+        The caller must not invoke this from provider.run. A stage does not call
+        submit. The existing provider switch runs between stages, so the GPU is
+        released before the next model starts. Other clients wait behind this
+        one admission.
+        """
+
+        if not stages:
+            raise ValueError("a sequence needs at least one stage")
+        normalized = tuple(SequenceStage(kind, payload) for kind, payload in stages)
+        for stage in normalized:
+            if stage.kind not in self._providers:
+                raise ValueError(f"scheduler has no {stage.kind.value} provider")
+        first = normalized[0]
+        job = ScheduledJob(
+            self._id_factory(),
+            first.kind,
+            self._clock.monotonic(),
+            first.payload,
+            stages=normalized,
+            persist_image=False,
+        )
+        await self._enqueue(job)
+        return job
+
+    async def _enqueue(self, job: ScheduledJob) -> None:
         async with self._lock:
             if not self._started or self._stopping:
                 raise SchedulerUnavailable("scheduler is not running")
@@ -258,16 +307,14 @@ class GpuScheduler:
                 raise SchedulerUnavailable(detail)
             if self._queue_length >= self._config.max_queue_depth:
                 raise QueueFull(f"GPU queue is full ({self._config.max_queue_depth})")
-            job = ScheduledJob(self._id_factory(), kind, self._clock.monotonic(), payload)
             self._jobs[job.id] = job
             self._queue.append(job)
             self._queue_length = len(self._queue)
             if self._state is SchedulerState.IDLE and self._current_job_id is None:
-                self._assign_state(queued_state(kind))
+                self._assign_state(queued_state(job.kind))
             self._wake.set()
-            logger.info("queued %s job %s depth=%s", kind.value, job.id, self._queue_length)
+            logger.info("queued %s job %s depth=%s", job.kind.value, job.id, self._queue_length)
         await self._emit(job)
-        return job
 
     async def get_job(self, job_id: str) -> ScheduledJob | None:
         """Return one admitted job. The caller must not mutate scheduler state."""
@@ -426,36 +473,49 @@ class GpuScheduler:
         return True
 
     async def _execute(self, job: ScheduledJob) -> None:
-        provider = self._providers[job.kind]
+        stages = job.stages or (SequenceStage(job.kind, job.payload),)
+        provider = self._providers[stages[0].kind]
         generation: int | None = None
         try:
             if job.cancel_requested:
                 await self._finish(job, JobStatus.CANCELLED, None)
                 return
-            ready = await self._prepare_provider(job, provider)
-            if not ready:
-                if job.status not in _TERMINAL:
-                    if job.cancel_requested or self._stopping:
-                        await self._finish(job, JobStatus.CANCELLED, None)
-                    else:
-                        await self._finish(
-                            job,
-                            JobStatus.FAILED,
-                            self._last_error,
-                            self._last_diagnostics,
-                        )
-                return
-            generation = await self._grant_lease(job)
-            await self._emit(job)
-            try:
-                await asyncio.wait_for(provider.run(job), self._config.job_timeout_seconds)
-            except asyncio.TimeoutError:
-                await self._safe_cancel(provider, job)
-                await self._finish(job, JobStatus.FAILED, "job timed out")
-                return
-            if job.cancel_requested:
-                await self._finish(job, JobStatus.CANCELLED, None)
-                return
+            for index, stage in enumerate(stages):
+                provider = self._providers[stage.kind]
+                async with self._lock:
+                    job.kind = stage.kind
+                    job.payload = stage.payload
+                    job.stage_index = index
+                if job.cancel_requested or self._stopping:
+                    await self._finish(job, JobStatus.CANCELLED, None)
+                    return
+                if generation is not None:
+                    await self._release_lease(generation)
+                    generation = None
+                ready = await self._prepare_provider(job, provider)
+                if not ready:
+                    if job.status not in _TERMINAL:
+                        if job.cancel_requested or self._stopping:
+                            await self._finish(job, JobStatus.CANCELLED, None)
+                        else:
+                            await self._finish(
+                                job,
+                                JobStatus.FAILED,
+                                self._last_error,
+                                self._last_diagnostics,
+                            )
+                    return
+                generation = await self._grant_lease(job)
+                await self._emit(job)
+                try:
+                    await asyncio.wait_for(provider.run(job), self._config.job_timeout_seconds)
+                except asyncio.TimeoutError:
+                    await self._safe_cancel(provider, job)
+                    await self._finish(job, JobStatus.FAILED, "job timed out")
+                    return
+                if job.cancel_requested:
+                    await self._finish(job, JobStatus.CANCELLED, None)
+                    return
             await self._finish(job, JobStatus.SUCCEEDED, None)
         except asyncio.CancelledError:
             await asyncio.shield(self._cleanup_cancelled(provider, job))

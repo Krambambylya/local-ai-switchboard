@@ -34,9 +34,38 @@ function chatCalls(fetchMock: ReturnType<typeof vi.fn>): unknown[][] {
   return fetchMock.mock.calls.filter((call) => String(call[0]).includes("/v1/chat/completions"));
 }
 
+function studioTask(status = "succeeded") {
+  return {
+    id: "task-1",
+    conversation_id: "chat-1",
+    status,
+    stage: status === "succeeded" ? "completed" : "analyzing",
+    message: status === "succeeded" ? "Completed." : "Analyzing image with Qwen.",
+    summary: status === "succeeded" ? "The image shows a red square." : null,
+    error: null,
+    stages: [
+      { id: "analyzing", status: "succeeded", message: "Analyzing image with Qwen.", model: "qwen3.5:4b-ctx8192", provider: "ollama" },
+      { id: "completed", status: "succeeded", message: "Completed." },
+    ],
+    assets: [],
+    files: [{ id: "file-1", role: "original", name: "board.png", media_type: "image/png", width: 64, height: 64, byte_size: 12, label: "board.png", asset_id: null }],
+    models: { analysis: "qwen3.5:4b-ctx8192" },
+    switch_result: "Qwen analyzed the request. FLUX was not called.",
+    operation: "analyze",
+  };
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  if (typeof Request !== "undefined" && input instanceof Request) return input.url;
+  return String(input);
+}
+
 function installGateway(chat?: (body: { model?: string; messages?: { content: string }[] }) => Response) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+    const url = requestUrl(input);
+    const method = (init?.method ?? (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
     if (url.includes("/health/ready")) return jsonResponse({ status: "ok" });
     if (url.includes("/v1/models")) return jsonResponse(MODELS);
     if (url.includes("/v1/chat/completions")) {
@@ -44,10 +73,20 @@ function installGateway(chat?: (body: { model?: string; messages?: { content: st
       if (chat) return chat(body);
       return sseResponse(`data: ${JSON.stringify({ choices: [{ delta: { content: ANSWER } }] })}\n\ndata: [DONE]\n\n`);
     }
+    if (url.includes("/v1/studio/tasks") && method === "POST" && !url.includes("/approve") && !url.includes("/cancel") && !url.includes("/retry")) {
+      return jsonResponse(studioTask("running"), 202);
+    }
+    if (url.includes("/v1/studio/tasks/task-1") && method === "GET") {
+      return jsonResponse(studioTask("succeeded"));
+    }
     return jsonResponse({ error: { message: "missing", type: "not_found" } }, 404);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function studioCalls(fetchMock: ReturnType<typeof vi.fn>): unknown[][] {
+  return fetchMock.mock.calls.filter((call) => requestUrl(call[0] as RequestInfo | URL).includes("/v1/studio/tasks"));
 }
 
 async function readyModel() {
@@ -125,7 +164,7 @@ describe("Local AI Studio", () => {
     expect(within(system).getByText("provider_error")).toBeInTheDocument();
   });
 
-  it("does not send a message while an attachment is selected", async () => {
+  it("sends an image through the studio task API instead of chat completions", async () => {
     const user = userEvent.setup();
     const fetchMock = installGateway();
     render(<App />);
@@ -133,10 +172,14 @@ describe("Local AI Studio", () => {
     const file = new File(["png"], "board.png", { type: "image/png" });
     await user.upload(screen.getByLabelText("Attach"), file);
     expect(screen.getByText("board.png")).toBeInTheDocument();
-    expect(screen.getByText("Анализ изображений пока не подключён")).toBeInTheDocument();
-    await user.type(screen.getByLabelText("Message"), "Проанализируй изображение.{Enter}");
+    await user.type(screen.getByLabelText("Message"), "Describe the image");
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(screen.queryByText("This file type is not supported.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("The image shows a red square.")).toBeInTheDocument();
     expect(chatCalls(fetchMock)).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(studioCalls(fetchMock).length).toBeGreaterThan(0);
+    expect(screen.getByText("Analyzing image with Qwen.")).toBeInTheDocument();
   });
 
   it("shows an unsupported attachment without calling the model", async () => {
@@ -149,6 +192,8 @@ describe("Local AI Studio", () => {
     expect(screen.getByText("This file type is not supported.")).toBeInTheDocument();
     await user.type(screen.getByLabelText("Message"), "read this{Enter}");
     expect(chatCalls(fetchMock)).toHaveLength(0);
+    expect(studioCalls(fetchMock)).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 
   it("renders metric placeholders instead of invented numbers", async () => {
