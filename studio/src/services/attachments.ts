@@ -1,3 +1,5 @@
+import { createId } from "./id";
+
 export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export const IMAGE_ANALYSIS_MESSAGE = "Анализ изображений пока не подключён";
 
@@ -43,7 +45,7 @@ export function formatBytes(size: number): string {
 export function createDraftAttachment(file: File): DraftAttachment {
   const inspection = inspectAttachment(file);
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     name: file.name,
     size: file.size,
     type: file.type,

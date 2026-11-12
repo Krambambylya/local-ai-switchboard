@@ -1,3 +1,4 @@
+import { createId } from "../id";
 import type { ChatMessage, ChatRecord, StoredStudio } from "../../types/api";
 
 export const STORAGE_KEY = "las.studio.v1";
@@ -24,7 +25,7 @@ export function saveState(state: StoredStudio): boolean {
 
 export function createChat(now = new Date().toISOString()): ChatRecord {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     title: "New chat",
     createdAt: now,
     updatedAt: now,

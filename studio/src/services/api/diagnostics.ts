@@ -1,10 +1,11 @@
+import { createId } from "../id";
 import type { DiagnosticEvent } from "../../types/api";
 
 export function createDiagnostic(
   event: Omit<DiagnosticEvent, "id" | "at" | "durationMs"> & { durationMs: number },
 ): DiagnosticEvent {
   const entry: DiagnosticEvent = {
-    id: crypto.randomUUID(),
+    id: createId(),
     at: new Date().toISOString(),
     endpoint: event.endpoint,
     status: event.status,

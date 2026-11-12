@@ -13,6 +13,7 @@ import { resolveSelectedModel } from "../models/modelSelection";
 import { ApiError, getReady, listModels, streamChat } from "../../services/api/client";
 import { createDiagnostic } from "../../services/api/diagnostics";
 import { historyFromMessages, selectHistory } from "../../services/api/history";
+import { createId } from "../../services/id";
 import { initialState, saveState, createChat, titleFromMessage } from "../../services/storage/chats";
 import type { ChatMessage, ChatRecord, DiagnosticEvent, GatewayView, HistoryTurn, ModelInfo, ModelsPhase } from "../../types/api";
 
@@ -177,7 +178,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (!chat) return;
     const now = new Date().toISOString();
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: createId(),
       role: "user",
       content: text,
       reasoning: "",
@@ -185,7 +186,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       status: "complete",
       error: null,
     };
-    const assistantId = crypto.randomUUID();
+    const assistantId = createId();
     const assistant: ChatMessage = {
       id: assistantId,
       role: "assistant",
@@ -219,7 +220,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const last = kept[kept.length - 1];
     if (last?.role === "assistant" && last.status === "error") kept.pop();
     const now = new Date().toISOString();
-    const assistantId = crypto.randomUUID();
+    const assistantId = createId();
     const assistant: ChatMessage = {
       id: assistantId,
       role: "assistant",
