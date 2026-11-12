@@ -1,0 +1,77 @@
+:root {
+  color-scheme: dark;
+  --bg: #141516;
+  --bg-raised: #1c1e21;
+  --bg-sunken: #101112;
+  --bg-hover: #26292d;
+  --line: #2c3035;
+  --line-strong: #3a3f45;
+  --text: #e7e8ea;
+  --text-muted: #9aa1a8;
+  --text-faint: #6f767d;
+  --accent: #d5d8dc;
+  --danger: #e09a9a;
+  --danger-bg: #2a1c1c;
+  --ok: #9dcaa8;
+  --warn: #d2c09a;
+  --pending: #6f767d;
+  --radius: 6px;
+  --shadow: none;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", monospace;
+  --nav: 252px;
+  --system: 300px;
+  --header: 48px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

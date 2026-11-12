@@ -7,6 +7,7 @@ import json
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,6 +16,8 @@ from local_ai_switchboard import __version__
 from local_ai_switchboard.api.assets import router as assets_router
 from local_ai_switchboard.api.chat import router as chat_router
 from local_ai_switchboard.api.health import router as health_router
+from local_ai_switchboard.api.studio import packaged_studio_dir
+from local_ai_switchboard.api.studio import router as studio_router
 from local_ai_switchboard.api.middleware import RequestContextMiddleware
 from local_ai_switchboard.config.settings import Settings
 from local_ai_switchboard.gpu.monitor import NvidiaGpuMonitor
@@ -62,6 +65,7 @@ def create_app(
     gpu_probe: GpuProbe | None = None,
     providers: dict[ProviderKind, ProviderProtocol] | None = None,
     scheduler: GpuScheduler | None = None,
+    studio_dir: Path | None = None,
 ) -> FastAPI:
     """Build the gateway app around one in-process GPU scheduler."""
 
@@ -99,10 +103,12 @@ def create_app(
     image = selected.get(ProviderKind.IMAGE)
     app.state.ollama_provider = llm if isinstance(llm, OllamaProvider) else None
     app.state.comfy_provider = image if isinstance(image, ComfyUIProvider) else None
+    app.state.studio_dir = studio_dir if studio_dir is not None else packaged_studio_dir()
     app.add_middleware(RequestContextMiddleware)
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(assets_router)
+    app.include_router(studio_router)
     return app
 
 

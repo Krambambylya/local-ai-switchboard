@@ -1,0 +1,26 @@
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.warning {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--danger);
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 760px) {
+  .scroll {
+    padding: 14px 12px 8px;
+  }
+}

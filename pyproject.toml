@@ -27,7 +27,12 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_ai_switchboard = ["workflows/*.json"]
+local_ai_switchboard = [
+    "workflows/*.json",
+    "studio_web/*",
+    "studio_web/*/*",
+    "studio_web/*/*/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

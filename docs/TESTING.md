@@ -14,7 +14,9 @@ Command, macOS Terminal, repository root:
 .venv/bin/pytest -o addopts=
 ```
 
-Result recorded with this documentation: **142 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and `tests/installer_python_runtime.ps1` was not executed here. The Python runtime cases mock discovery and installation. They do not download Python or install software, and they were not run on the Windows 11 PC. Automated tests do not prove an RTX 4060 run.
+Result recorded with this documentation: **153 passed, 1 skipped**. The skip is `test_powershell_parser_when_available`. PowerShell is not installed on this Mac, so the installer scripts were not parsed by the PowerShell parser and `tests/installer_python_runtime.ps1` was not executed here. The Python runtime cases mock discovery and installation. They do not download Python or install software, and they were not run on the Windows 11 PC. Automated tests do not prove an RTX 4060 run.
+
+The studio page has a separate Vitest suite in `studio/`. On this Mac it reported 25 passed. That suite uses mocked gateway responses. It does not prove a reply from the Windows GPU.
 
 The suite uses Python 3.13 in `.venv` for development. The project requires Python 3.12 or newer. The Windows installer pins the last Python 3.12 build that still has an official Windows installer, which is 3.12.10, and only when the PC does not already have 3.12 or newer.
 
@@ -40,6 +42,7 @@ The suite uses Python 3.13 in `.venv` for development. The project requires Pyth
 | The Mac client saves a Unicode path, retries, and sends no credential | `tests/test_generate_asset.py` |
 | Installer pins, no remote script execution, firewall scope, and startup action | `tests/test_installer.py` |
 | `nvidia-smi` CSV parsing, including an RTX 4060 sample row | `tests/test_nvidia_smi.py` |
+| `/studio` serves the built page, keeps `/v1` and `/health` on their own handlers, and returns a diagnostic when the build is missing | `tests/test_studio.py` |
 
 The original scenarios map as follows.
 
@@ -77,6 +80,7 @@ A parsed sample that mentions an RTX 4060 is an automated test. It is not a hard
 - ComfyUI portable launch on the RTX 4060, `/system_stats` on that machine, and a Klein image from `verify-image-pipeline.ps1`. The verdict, model pins, PNG check, and rollback are covered by mocks. Those tests do not prove an RTX 4060 run, and this repository does not record a generated image from that GPU.
 - Reachability from the Mac: gateway on the LAN, Ollama and ComfyUI refused.
 - Open CoDesign pointed at `http://<windows-lan-ip>:8787/v1`.
+- Local AI Studio in a browser on the Mac against the Windows gateway, including a live reply from `qwen3.5:4b-ctx8192`. The page and its Vitest suite are covered on the Mac. Those checks do not prove the Windows GPU answered.
 - The Mac client saving a file that came from the Windows gateway.
 - The Windows `msvcrt` scheduler lock.
 - Reboot behavior of the scheduled task.

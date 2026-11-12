@@ -1,0 +1,68 @@
+.form,
+.dragging {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.dragging {
+  background: var(--bg-raised);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.attach {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+
+.attach:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.file {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.input {
+  width: 100%;
+  resize: vertical;
+  min-height: 52px;
+  max-height: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+.send {
+  height: 32px;
+}
+
+.notice {
+  margin: 0;
+  color: var(--warn);
+}

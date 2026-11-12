@@ -1,0 +1,43 @@
+.empty {
+  width: min(640px, 100%);
+  margin-inline: auto;
+  padding: 8px 0 12px;
+}
+
+.empty h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.empty p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+}
+
+.model span {
+  color: var(--text);
+}
+
+.examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.example {
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  text-align: left;
+  color: var(--text);
+}
+
+.example:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}

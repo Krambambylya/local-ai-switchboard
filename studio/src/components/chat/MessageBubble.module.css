@@ -1,0 +1,139 @@
+.user,
+.assistant {
+  min-width: 0;
+}
+
+.user {
+  align-self: flex-end;
+  max-width: min(680px, 86%);
+  margin-left: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.assistant {
+  padding: 2px 0;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.action:hover {
+  color: var(--text);
+}
+
+.text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown {
+  overflow-wrap: anywhere;
+}
+
+.markdown :global(p),
+.markdown :global(ul),
+.markdown :global(ol),
+.markdown :global(pre) {
+  margin: 0 0 8px;
+}
+
+.markdown :global(p:last-child),
+.markdown :global(pre:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown :global(pre) {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.markdown :global(code) {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.markdown :global(p code) {
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-sunken);
+}
+
+.markdown :global(table) {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown :global(th),
+.markdown :global(td) {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.thinking {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+}
+
+.thinking summary {
+  cursor: pointer;
+}
+
+.pending {
+  margin: 6px 0 0;
+  color: var(--warn);
+}
+
+.pending::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.error {
+  margin: 6px 0 0;
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending::before {
+    animation: none;
+  }
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}

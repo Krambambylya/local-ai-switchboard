@@ -18,7 +18,8 @@ It finds the install and runs the 768×768 check. The window stays open until yo
 
 ## Layout
 
-- `src/local_ai_switchboard/` is the gateway.
+- `src/local_ai_switchboard/` is the gateway. The built Local AI Studio page is served at `/studio`.
+- `studio/` is the frontend source. Node.js is used to build it. The running gateway does not start a Node server.
 - `client/macos/generate_asset.py` downloads a finished image into a project directory. It sends the Gateway URL and no credentials.
 - `installer/` is the Windows PowerShell installer and the lifecycle scripts.
 - `docs/` is the operator and security documentation.
@@ -36,6 +37,7 @@ Python 3.12 or newer is required. The suite does not need an NVIDIA driver.
 ## Operator docs
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Local AI Studio](docs/STUDIO.md)
 - [Installation](docs/INSTALLATION.md)
 - [Windows setup and hardware checklist](docs/WINDOWS_SETUP.md)
 - [Open CoDesign](docs/OPENCODESIGN.md)

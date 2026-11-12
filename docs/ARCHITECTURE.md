@@ -48,4 +48,8 @@ A release timeout leaves the scheduler in `ERROR`. Queued work waits there until
 
 The Design installer pulls `qwen3.5:4b` through the Ollama application and creates a local profile `qwen3.5:4b-ctx8192` with `num_ctx` 8192. The gateway does not hardcode a model name. Open CoDesign sends the model name on each chat request.
 
+## Studio
+
+`GET /studio` serves Local AI Studio from the `studio_web` directory inside the gateway package. The handler only answers paths under `/studio`. A file request has to stay inside that directory. `/health` and `/v1` keep their existing handlers. If `index.html` is missing, `/studio` returns HTTP 503 with a short HTML message and no server path. The page calls `/health/ready`, `/v1/models`, and `/v1/chat/completions` on the same origin. Chat transcripts stay in the browser. See [STUDIO.md](STUDIO.md).
+
 The shipped workflow `flux2-klein-4b` is disabled and contains no graph. `flux2-klein-t2i` is the adapted official API graph. Install and update stage it under `workflows\candidates`, which the registry does not load. `verify-image-pipeline.ps1` copies it into the live directory, restarts this Gateway once, and sends a chat, the image job, and a second chat through that process. The second chat switches the scheduler from ComfyUI back to Ollama. The script does not construct a second scheduler. See [WORKFLOWS.md](WORKFLOWS.md).
